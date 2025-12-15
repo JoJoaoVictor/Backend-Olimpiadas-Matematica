@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  # Aplicação FastAPI
+  app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=True
+      - DATABASE_URL=postgresql://olimpiadas_user:senha123@postgres:5432/olimpiadas_db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./uploads:/app/uploads
+      - ./static:/app/static
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - olimpiadas-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=olimpiadas_db
+      - POSTGRES_USER=olimpiadas_user
+      - POSTGRES_PASSWORD=senha123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+    networks:
+      - olimpiadas-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - olimpiadas-network
+    command: redis-server --appendonly yes
+
+  # Nginx (Proxy Reverso - Produção)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./static:/app/static
+      - ./uploads:/app/uploads
+    depends_on:
+      - app
+    restart: unless-stopped
+    networks:
+      - olimpiadas-network
+    profiles: ["production"]
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  olimpiadas-network:
+    driver: bridge

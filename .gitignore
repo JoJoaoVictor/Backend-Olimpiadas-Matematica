@@ -1,0 +1,34 @@
+# Ambiente virtual
+venv/
+.env
+
+# VS Code
+.vscode/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Banco de dados local
+*.db
+test.db
+
+# Arquivos de log
+*.log
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
+
+# Docker
+.env.docker
+
+# Pytest
+.pytest_cache/
+
+# Build / dist
+dist/
+build/
+*.egg-info/
