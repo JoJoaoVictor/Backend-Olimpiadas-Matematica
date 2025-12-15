@@ -65,7 +65,7 @@ app/
 ### 1. Clone o repositório
 
 ```bash
-git clone <seu-repositorio>
+git clone <https://github.com/JoJoaoVictor/Backend-Olimpiadas-Matematica.git>
 cd backend-olimpiadas-python
 ```
 
