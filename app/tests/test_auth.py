@@ -13,7 +13,7 @@ def test_user_registration(client, db_session):
     "password": "Senha123",
     "name": "Test User"
 }
-    
+     
     # Chamar endpoint de registro
     response = client.post("/api/v1/auth/register", json=user_data)
     

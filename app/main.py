@@ -8,7 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import time
 import logging
 from typing import Union
-
+ 
 from app.core.config import settings
 from app.core.exceptions import AppException
 from app.api.v1 import auth, users, questions, categories, graus, exams, images

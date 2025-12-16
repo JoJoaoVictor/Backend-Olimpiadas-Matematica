@@ -24,7 +24,7 @@ class CustomValidators:
     - NÃO acessam banco de dados
     - Podem ser usadas em qualquer parte do sistema
     - Apenas validam FORMATO e SINTAXE
-    """
+    """ 
     
     # ═════════════════════════════════════════════════════════
     # VALIDADORES DE DADOS PESSOAIS

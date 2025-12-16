@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
-
+ 
 # Engine do SQLAlchemy
 if settings.DATABASE_URL.startswith("sqlite"):
     engine = create_engine(

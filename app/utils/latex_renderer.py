@@ -10,7 +10,7 @@ import logging
 from app.core.exceptions import ValidationException
 
 logger = logging.getLogger(__name__)
-
+ 
 
 class LaTeXRenderer:
     """Renderizador LaTeX avançado."""

@@ -21,4 +21,4 @@ def test_fastapi_client(client):
     response = client.get("/docs")
     # Pode retornar 200 (sucesso) ou 404 (se não existir) - ambos são OK para teste
     assert response.status_code in [200, 404]
-    print("✅ Cliente FastAPI funcionando!")
+    print("✅ Cliente FastAPI funcionando!") 

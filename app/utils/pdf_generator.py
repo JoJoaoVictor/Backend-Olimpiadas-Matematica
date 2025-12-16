@@ -21,7 +21,6 @@ from app.models.exam import Exam
 from app.models.question import Question
 from app.core.config import settings
 
-
 class AdvancedPDFGenerator:
     """Gerador avançado de PDFs."""
     

@@ -41,7 +41,7 @@ class ImageProcessor:
     THUMBNAIL_SIZE = (300, 300)
     QUALITY_STANDARD = 85
     QUALITY_THUMBNAIL = 80
-    
+     
     
     # ═════════════════════════════════════════════════════════
     # OTIMIZAÇÃO DE IMAGENS MATEMÁTICAS

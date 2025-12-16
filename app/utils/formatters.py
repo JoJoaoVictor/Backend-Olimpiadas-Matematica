@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 import re
 from decimal import Decimal
- 
+  
 
 class DataFormatters:
     """

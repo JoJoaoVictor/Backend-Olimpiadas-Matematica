@@ -12,7 +12,7 @@ from app.core.config import settings
 # Security scheme
 security = HTTPBearer(auto_error=False)
 
-
+ 
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db)

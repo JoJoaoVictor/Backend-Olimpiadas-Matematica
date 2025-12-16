@@ -16,7 +16,7 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
 from reportlab.pdfgen import canvas
 
-
+ 
 from app.models.exam import Exam
 from app.models.question import Question
 from app.schemas.exam import ExamPDFRequest

@@ -6,7 +6,7 @@ from pathlib import Path
 # =============================================================================
 # ⚠️ CONFIGURAR ENVIRONMENT ANTES DE QUALQUER IMPORTAÇÃO ⚠️
 # =============================================================================
-
+ 
 # CONFIGURAR VARIÁVEIS DE TESTE PRIMEIRO
 os.environ["ENVIRONMENT"] = "testing"
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
