@@ -1,3 +1,5 @@
+from sqlalchemy import text
+
 def test_imports():
     """Teste se todas as importações básicas funcionam"""
     from app.main import app
@@ -11,7 +13,7 @@ def test_imports():
 
 def test_database_connection(db_session):
     """Teste se a conexão com o banco funciona"""
-    result = db_session.execute("SELECT 1")
+    result = db_session.execute(text("SELECT 1"))
     assert result.scalar() == 1
     print("✅ Conexão com banco funcionando!")
 

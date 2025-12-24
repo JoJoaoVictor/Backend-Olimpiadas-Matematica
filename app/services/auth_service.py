@@ -1,211 +1,254 @@
-"""Serviços de autenticação e gerenciamento de usuários."""
+"""
+Serviços de autenticação e gerenciamento de usuários.
+
+Responsável por:
+- Registro de usuários
+- Login com email/senha
+- Login com Google (Google Identity Services)
+- Geração e renovação de tokens JWT
+- Recuperação de Senha (Esqueci minha senha) com envio de Email real
+"""
 
 from datetime import datetime, timedelta
-from typing import Optional, Tuple
+from typing import Tuple, Optional
 from sqlalchemy.orm import Session
-from fastapi import HTTPException, status
 import secrets
-import hashlib
+
+# Google Identity Services (JWT)
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 from app.models.user import User, UserRole
 from app.schemas.auth import UserRegister, UserLogin
 from app.core.security import (
-    verify_password, 
-    get_password_hash, 
-    create_access_token, 
+    verify_password,
+    get_password_hash,
+    create_access_token,
     create_refresh_token,
     decode_token
 )
 from app.core.exceptions import (
-    UnauthorizedException, 
-    ConflictException, 
-    NotFoundException,
-    ValidationException
+    UnauthorizedException,
+    ConflictException,
+    NotFoundException
 )
- 
+from app.core.config import settings
+
+# IMPORTAÇÃO DE ENVIO DE EMAIL (Utilitário criado anteriormente)
+from app.core.mail import send_reset_password_email
 
 class AuthService:
-    """Serviços de autenticação."""
-    
-    MAX_LOGIN_ATTEMPTS = 5
-    LOCKOUT_DURATION_HOURS = 2
-    
+    """
+    Classe responsável por todas as regras de negócio
+    relacionadas à autenticação e autorização.
+    """
+
+    # =========================
+    # REGISTRO DE USUÁRIO
+    # =========================
+
     @staticmethod
     def register_user(db: Session, user_data: UserRegister) -> User:
-        """Registra novo usuário."""
-        # Verifica se email já existe
+        """
+        Registra um novo usuário com email e senha.
+        """
+        # Verifica se email já está em uso
         existing_user = db.query(User).filter(User.email == user_data.email).first()
         if existing_user:
             raise ConflictException("Email já está em uso")
-        
-        # Cria token de verificação de email
+
+        # Token para verificação de email (caso implemente futuramente)
         email_token = secrets.token_urlsafe(32)
-        
-        # Cria usuário
+
         user = User(
             name=user_data.name,
             email=user_data.email,
             password_hash=get_password_hash(user_data.password),
             role=user_data.role,
             email_verification_token=email_token,
-            is_active=True
+            is_active=True,
+            is_email_verified=False,
         )
-        
+
         db.add(user)
         db.commit()
         db.refresh(user)
-        
-        # TODO: Enviar email de verificação
-        # email_service.send_verification_email(user.email, email_token)
-        
+
         return user
-    
+
+    # =========================
+    # LOGIN TRADICIONAL
+    # =========================
+
     @staticmethod
     def authenticate_user(db: Session, credentials: UserLogin) -> Tuple[User, dict]:
-        """Autentica usuário e retorna tokens."""
-        # Busca usuário
+        """
+        Autentica usuário via email e senha.
+        """
         user = db.query(User).filter(User.email == credentials.email).first()
-        if not user:
+
+        if not user or not verify_password(credentials.password, user.password_hash):
             raise UnauthorizedException("Credenciais inválidas")
-        
-        # Verifica se conta está bloqueada
-        if AuthService._is_account_locked(user):
-            raise UnauthorizedException(
-                f"Conta bloqueada até {user.locked_until.strftime('%H:%M:%S')} "
-                f"devido a múltiplas tentativas de login"
-            )
-        
-        # Verifica senha
-        if not verify_password(credentials.password, user.password_hash):
-            AuthService._handle_failed_login(db, user)
-            raise UnauthorizedException("Credenciais inválidas")
-        
-        # Verifica se usuário está ativo
-        if not user.is_active:
-            raise UnauthorizedException("Conta desativada")
-        
-        # Login bem-sucedido - reset tentativas
-        if user.login_attempts > 0:
-            user.login_attempts = 0
-            user.locked_until = None
-        
-        user.last_login = datetime.utcnow()
-        db.commit()
-        
-        # Gera tokens
+
         tokens = AuthService._generate_tokens(user)
-        
         return user, tokens
-    
+
+    # =========================
+    # LOGIN COM GOOGLE (JWT)
+    # =========================
+
+    @staticmethod
+    def authenticate_google_user(db: Session, credential: str) -> Tuple[User, dict]:
+        """
+        Autentica usuário via Google Identity Services.
+        Se o usuário não existir, cria automaticamente com cargo STUDENT.
+        """
+
+        try:
+            # 1. Valida o token JWT com o Google
+            google_payload = id_token.verify_oauth2_token(
+                credential,
+                google_requests.Request(),
+                settings.GOOGLE_CLIENT_ID
+            )
+        except ValueError:
+            raise UnauthorizedException("Token do Google inválido")
+
+        # 2. Extrai dados do usuário
+        email = google_payload.get("email")
+        name = google_payload.get("name")
+        picture = google_payload.get("picture")
+        # 'sub' é o ID único do usuário no Google
+        google_sub = google_payload.get("sub") 
+
+        if not email:
+            raise UnauthorizedException("Email não encontrado no token do Google")
+
+        # 3. Verifica se usuário já existe
+        user = db.query(User).filter(User.email == email).first()
+
+        # 4. Cria usuário automaticamente se não existir
+        if not user:
+            user = User(
+                name=name,
+                email=email,
+                google_id=google_sub, 
+                password_hash="", # Usuário Google não tem senha
+                
+                # --- REQUISITO: Google = STUDENT ---
+                role=UserRole.STUDENT,
+                # -----------------------------------
+                
+                is_active=True,
+                is_email_verified=True, # Google já verifica o email
+                avatar_url=picture,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+ 
+        # 5. Gera tokens JWT da aplicação
+        tokens = AuthService._generate_tokens(user)
+
+        return user, tokens
+
+    # =========================
+    # REFRESH TOKEN
+    # =========================
+
     @staticmethod
     def refresh_access_token(db: Session, refresh_token: str) -> dict:
-        """Renova access token usando refresh token."""
-        try:
-            payload = decode_token(refresh_token)
-            
-            if payload.get("type") != "refresh":
-                raise UnauthorizedException("Token de refresh inválido")
-            
-            user_id = payload.get("sub")
-            user = db.query(User).filter(User.id == int(user_id)).first()
-            
-            if not user or not user.is_active:
-                raise UnauthorizedException("Usuário não encontrado ou inativo")
-            
-            # Gera novos tokens
-            return AuthService._generate_tokens(user)
-            
-        except Exception:
-            raise UnauthorizedException("Token de refresh inválido ou expirado")
-    
-    @staticmethod
-    def verify_email(db: Session, token: str) -> User:
-        """Verifica email do usuário."""
-        user = db.query(User).filter(User.email_verification_token == token).first()
+        """
+        Gera novos tokens a partir de um refresh token válido.
+        """
+        payload = decode_token(refresh_token)
+        user_id = payload.get("sub")
+
+        user = db.query(User).filter(User.id == int(user_id)).first()
         if not user:
-            raise NotFoundException("Token de verificação inválido")
-        
-        user.is_email_verified = True
-        user.email_verification_token = None
-        db.commit()
-        
-        return user
-    
+            raise UnauthorizedException("Usuário inválido")
+
+        return AuthService._generate_tokens(user)
+
+    # =========================
+    # RECUPERAÇÃO DE SENHA
+    # =========================
+
     @staticmethod
-    def request_password_reset(db: Session, email: str) -> Optional[User]:
-        """Solicita reset de senha."""
+    async def forgot_password(db: Session, email: str) -> None:
+        """
+        Gera token de recuperação e ENVIA O EMAIL DE VERDADE.
+        OBS: Este método deve ser chamado com 'await'.
+        """
         user = db.query(User).filter(User.email == email).first()
+        
+        # Se usuário não existe, retornamos silenciosamente para segurança (Security through obscurity)
         if not user:
-            # Por segurança, não revelamos se email existe
-            return None
+            return
+
+        # 1. Gerar Token Único Seguro
+        token = secrets.token_urlsafe(32)
         
-        # Gera token de reset
-        reset_token = secrets.token_urlsafe(32)
-        token_hash = hashlib.sha256(reset_token.encode()).hexdigest()
-        
-        user.password_reset_token = token_hash
-        user.password_reset_expires = datetime.utcnow() + timedelta(hours=1)
+        # 2. Salvar no Banco (Validade: 30 minutos)
+        user.password_reset_token = token
+        user.password_reset_expires = datetime.utcnow() + timedelta(minutes=30)
         db.commit()
+
+        # 3. Gerar Link (Apontando para o Frontend)
+        # Nota: Idealmente use settings.FRONTEND_URL, aqui estamos usando localhost fixo
+        link_recuperacao = f"http://localhost:5173/reset-password?token={token}"
         
-        # TODO: Enviar email com token
-        # email_service.send_password_reset_email(user.email, reset_token)
-        
-        return user
-    
+        # 4. Enviar Email (Async)
+        try:
+            print(f"Enviando email de recuperação para {email}...")
+            await send_reset_password_email(email, link_recuperacao)
+            print("Email enviado com sucesso!")
+        except Exception as e:
+            # Logamos o erro mas não quebramos a requisição para o usuário não ver stack trace
+            print(f"ERRO CRÍTICO AO ENVIAR EMAIL: {e}")
+            # Em produção, usar logger.error(e)
+
     @staticmethod
-    def reset_password(db: Session, token: str, new_password: str) -> User:
-        """Reseta senha do usuário."""
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
-        
-        user = db.query(User).filter(
-            User.password_reset_token == token_hash,
-            User.password_reset_expires > datetime.utcnow()
-        ).first()
-        
+    def reset_password(db: Session, token: str, new_password: str) -> None:
+        """
+        Valida o token e atualiza a senha do usuário.
+        """
+        # Busca usuário pelo token
+        user = db.query(User).filter(User.password_reset_token == token).first()
+
         if not user:
-            raise ValidationException("Token inválido ou expirado")
-        
-        # Atualiza senha
+            raise UnauthorizedException("Token inválido.")
+
+        # Verifica expiração
+        if user.password_reset_expires < datetime.utcnow():
+            raise UnauthorizedException("Token expirado. Solicite novamente.")
+
+        # Atualiza a senha e limpa o token
         user.password_hash = get_password_hash(new_password)
         user.password_reset_token = None
         user.password_reset_expires = None
-        user.login_attempts = 0  # Reset tentativas
-        user.locked_until = None
         
         db.commit()
-        return user
-    
-    @staticmethod
-    def _is_account_locked(user: User) -> bool:
-        """Verifica se conta está bloqueada."""
-        return (
-            user.locked_until is not None and 
-            user.locked_until > datetime.utcnow()
-        )
-    
-    @staticmethod
-    def _handle_failed_login(db: Session, user: User):
-        """Processa tentativa de login falhada."""
-        user.login_attempts += 1
-        
-        if user.login_attempts >= AuthService.MAX_LOGIN_ATTEMPTS:
-            user.locked_until = (
-                datetime.utcnow() + 
-                timedelta(hours=AuthService.LOCKOUT_DURATION_HOURS)
-            )
-        
-        db.commit()
-    
+
+    # =========================
+    # AUXILIAR – GERA TOKENS
+    # =========================
+
     @staticmethod
     def _generate_tokens(user: User) -> dict:
-        """Gera access e refresh tokens."""
-        access_token = create_access_token(user.id)
-        refresh_token = create_refresh_token(user.id)
-        
+        """
+        Gera access token e refresh token JWT.
+        """
         return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
+            "access_token": create_access_token(user.id),
+            "refresh_token": create_refresh_token(user.id),
             "token_type": "bearer",
-            "expires_in": 15 * 60  # 15 minutos em segundos
+            "expires_in": 15 * 60,  # 15 minutos
+            "user": {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "role": user.role,
+                "avatar_url": user.avatar_url
+            }
         }
-

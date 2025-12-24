@@ -1,268 +1,181 @@
+# app/main.py
+# --------------------------------------------------------------------------------
+# IMPORTAÇÕES
+# --------------------------------------------------------------------------------
 from contextlib import asynccontextmanager
+import time
+import logging
+
+# FastAPI e Starlette
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
-import time
-import logging
-from typing import Union
- 
+
+# Módulos Internos da Aplicação
 from app.core.config import settings
 from app.core.exceptions import AppException
-from app.api.v1 import auth, users, questions, categories, graus, exams, images
 from app.database import engine
 from app.models import BaseModel as Base
 
+# Importação das Rotas (Endpoints)
+from app.api.v1 import auth, users, questions, categories, graus, exams, images
 
-# Configuração de logging
+# --------------------------------------------------------------------------------
+# 1. CONFIGURAÇÃO DE LOGS (Para ver o que acontece no terminal)
+# --------------------------------------------------------------------------------
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper()),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-
 logger = logging.getLogger(__name__)
 
- 
+# --------------------------------------------------------------------------------
+# 2. CICLO DE VIDA DA APLICAÇÃO (Lifespan)
+# Executa código antes do servidor iniciar e depois que ele desliga
+# --------------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Eventos de startup e shutdown da aplicação."""
-    # Startup
-    logger.info("🚀 Iniciando aplicação FastAPI")
+    # --- Startup (Início) ---
+    logger.info("🚀 Iniciando aplicação FastAPI - MODO TESTE")
     
-    # Cria tabelas se não existirem (apenas em desenvolvimento)
+    # Cria as tabelas no banco de dados automaticamente se estiver em modo DEV
     if settings.is_development:
-        logger.info("📦 Criando tabelas do banco de dados...")
+        logger.info("📦 Verificando/Criando tabelas do banco de dados...")
         Base.metadata.create_all(bind=engine)
-        logger.info("✅ Tabelas criadas com sucesso")
+        logger.info("✅ Tabelas sincronizadas com sucesso")
     
-    # Configuração adicional de startup
-    if settings.SENTRY_DSN:
-        import sentry_sdk
-        sentry_sdk.init(dsn=settings.SENTRY_DSN)
-        logger.info("📊 Sentry configurado")
+    yield # A aplicação roda aqui
     
-    yield
-    
-    # Shutdown
+    # --- Shutdown (Desligamento) ---
     logger.info("👋 Encerrando aplicação")
 
-
-# Criação da app FastAPI
+# --------------------------------------------------------------------------------
+# 3. INICIALIZAÇÃO DO APP FASTAPI
+# --------------------------------------------------------------------------------
 app = FastAPI(
     title="Olimpíadas de Matemática API",
-    description="""
-    API para sistema de gestão de olimpíadas de matemática.
-    
-    ## Funcionalidades
-    
-    * **Autenticação** - JWT com refresh tokens
-    * **Usuários** - Gestão de professores e alunos  
-    * **Questões** - CRUD com LaTeX e imagens
-    * **Provas** - Montagem e geração de PDF
-    * **Categorias** - Organização de questões
-    * **Upload** - Imagens otimizadas
-    """,
+    description="API Backend para o sistema de provas e questões.",
     version="1.0.0",
-    docs_url="/docs" if settings.is_development else None,
-    redoc_url="/redoc" if settings.is_development else None,
-    openapi_url="/openapi.json" if settings.is_development else None,
+    docs_url="/docs",               # URL da documentação Swagger
+    redoc_url="/redoc",             # URL da documentação Redoc
+    openapi_url="/openapi.json",
     lifespan=lifespan
 )
 
-# Middleware de CORS
+# --------------------------------------------------------------------------------
+# 4. CONFIGURAÇÃO DE CORS (CRUCIAL PARA O FRONTEND + LOGIN GOOGLE)
+# Define quem pode acessar este backend.
+# --------------------------------------------------------------------------------
+origins = [
+    "http://localhost:5173",      # Vite / React (Seu Frontend)
+    "http://127.0.0.1:5173",      # Variação do localhost
+    "http://localhost:3000",      # Caso use Create React App (backup)
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=settings.CORS_METHODS,
-    allow_headers=settings.CORS_HEADERS,
-    
+    allow_origins=origins,        # Lista de endereços permitidos acima
+    allow_credentials=True,       # IMPORTANTE: Permite cookies/sessões (Google Auth precisa disso)
+    allow_methods=["*"],          # Permite GET, POST, PUT, DELETE, etc.
+    allow_headers=["*"],          # Permite enviar tokens e headers json
 )
-"""# Middleware de CORS - TESTE TEMPORÁRIO
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  #  "*"  testes
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)"""
-# Middleware de hosts confiáveis (apenas em produção)
-if settings.is_production:
-    app.add_middleware(
-        TrustedHostMiddleware, 
-        allowed_hosts=["olimpiadas-api.exemplo.com", "localhost"]
-    )
 
-
-# Middleware customizado para logging de requests
+# --------------------------------------------------------------------------------
+# 5. MIDDLEWARE DE LOGGING DE REQUISIÇÕES
+# Monitora o tempo de resposta de cada chamada
+# --------------------------------------------------------------------------------
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """Middleware para logging detalhado de requests."""
     start_time = time.time()
     
-    # Log da request
-    logger.info(
-        f"🌐 {request.method} {request.url.path} - "
-        f"IP: {request.client.host} - "
-        f"User-Agent: {request.headers.get('user-agent', 'Unknown')}"
-    )
+    # Loga a entrada da requisição
+    logger.info(f"🌐 Recebendo: {request.method} {request.url.path}")
     
-    # Processa request
     response = await call_next(request)
     
-    # Log da response
+    # Loga o tempo total e o status (200, 404, 500, etc)
     process_time = time.time() - start_time
-    logger.info(
-        f"✅ {request.method} {request.url.path} - "
-        f"Status: {response.status_code} - "
-        f"Time: {process_time:.3f}s"
-    )
-    
-    # Adiciona header com tempo de processamento
-    response.headers["X-Process-Time"] = str(process_time)
+    logger.info(f"✅ Finalizado: {request.method} {request.url.path} - Status: {response.status_code} - Tempo: {process_time:.4f}s")
     
     return response
 
-
-# Exception handlers
-@app.exception_handler(AppException)
-async def app_exception_handler(request: Request, exc: AppException):
-    """Handler para exceções customizadas da aplicação."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "success": False,
-            "message": exc.detail,
-            "error_type": exc.__class__.__name__
-        }
-    )
-
-
-@app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    """Handler para exceções HTTP padrão."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "success": False,
-            "message": exc.detail,
-            "error_type": "HTTPException"
-        }
-    )
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Handler para erros de validação Pydantic."""
-    errors = []
-    for error in exc.errors():
-        errors.append({
-            "field": " -> ".join(str(x) for x in error["loc"][1:]),
-            "message": error["msg"],
-            "type": error["type"]
-        })
-    
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "success": False,
-            "message": "Dados de entrada inválidos",
-            "errors": errors
-        }
-    )
-
-
+# --------------------------------------------------------------------------------
+# 6. TRATAMENTO DE ERROS (EXCEPTION HANDLERS)
+# Captura erros inesperados para não derrubar o servidor
+# --------------------------------------------------------------------------------
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handler para exceções não tratadas."""
-    logger.error(f"❌ Erro não tratado: {str(exc)}", exc_info=True)
-    
-    if settings.is_development:
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "success": False,
-                "message": "Erro interno do servidor",
-                "detail": str(exc),
-                "error_type": exc.__class__.__name__
-            }
-        )
-    else:
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "success": False,
-                "message": "Erro interno do servidor"
-            }
-        )
+    logger.error(f"❌ Erro Crítico Não Tratado: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False, 
+            "message": "Erro interno do servidor", 
+            "detail": str(exc) if settings.is_development else "Contate o suporte."
+        }
+    )
 
-
-# Rotas de sistema
-@app.get("/", tags=["Sistema"])
+# --------------------------------------------------------------------------------
+# 7. ROTAS BÁSICAS E DE COMPATIBILIDADE (LEGACY)
+# Endpoints temporários para garantir que o frontend antigo não quebre
+# --------------------------------------------------------------------------------
+@app.get("/")
 async def root():
-    """Endpoint raiz da API."""
-    return {
-        "success": True,
-        "message": "API Olimpíadas de Matemática",
-        "version": "1.0.0",
-        "environment": settings.ENVIRONMENT,
-        "docs_url": "/docs" if settings.is_development else "Desabilitado em produção"
-    }
+    return {"message": "API Olimpíadas rodando!", "docs": "/docs"}
 
-
-@app.get("/health", tags=["Sistema"])
+@app.get("/health")
 async def health_check():
-    """Health check da aplicação."""
-    return {
-        "success": True,
-        "status": "healthy",
-        "timestamp": time.time(),
-        "environment": settings.ENVIRONMENT,
-        "version": "1.0.0"
-    }
+    return {"status": "healthy", "server_time": time.time()}
+
+# --- Endpoints Simulados (Mocks) para o Frontend ---
+@app.get("/questoesAprovadas")
+async def get_questoes_aprovadas():
+    return {"message": "Endpoint legado - questões aprovadas", "data": []}
+
+@app.get("/projects")
+async def get_projects():
+    return {"message": "Endpoint legado - projects", "data": []}
+
+@app.get("/provasMontadas")
+async def get_provas_montadas():
+    return {"message": "Endpoint legado - provas montadas", "data": []}
+
+@app.get("/categoris") # Mantido o nome original (typo) se o front chama assim
+async def get_categoris():
+    return {"message": "Endpoint legado - categoris", "data": []}
+
+@app.get("/grau")
+async def get_grau():
+    return {"message": "Endpoint legado - grau", "data": []}
+
+# --------------------------------------------------------------------------------
+# 8. INCLUSÃO DAS ROTAS DA API V1 (OFICIAL)
+# Conecta os arquivos da pasta /api/v1 ao app principal
+# --------------------------------------------------------------------------------
+try:
+    # Autenticação (Login Google, etc)
+    app.include_router(auth.router, prefix="/api/v1/auth", tags=["Autenticação"])
+    
+    # Recursos do Sistema
+    app.include_router(users.router, prefix="/api/v1/users", tags=["Usuários"])
+    app.include_router(categories.router, prefix="/api/v1/categories", tags=["Categorias"])
+    app.include_router(graus.router, prefix="/api/v1/graus", tags=["Graus"])
+    app.include_router(images.router, prefix="/api/v1/images", tags=["Imagens"])
+    app.include_router(questions.router, prefix="/api/v1/questions", tags=["Questões"])
+    app.include_router(exams.router, prefix="/api/v1/exams", tags=["Provas"])
+    
+    logger.info("✅ Todas as rotas da API V1 foram carregadas.")
+
+except Exception as e:
+    logger.warning(f"⚠️ AVISO: Alguma rota falhou ao carregar. Verifique os imports em app/api/v1/__init__.py. Erro: {e}")
 
 
-# Inclusão das rotas da API v1
-app.include_router(
-    auth.router,
-    prefix="/api/v1/auth",
-    tags=["Autenticação"]
-)
-
-app.include_router(
-    users.router,
-    prefix="/api/v1/users",
-    tags=["Usuários"]
-)
-
-app.include_router(
-    categories.router,
-    prefix="/api/v1/categories",
-    tags=["Categorias"]
-)
-
-app.include_router(
-    graus.router,
-    prefix="/api/v1/graus", 
-    tags=["Graus Educacionais"]
-)
-
-app.include_router(
-    images.router,
-    prefix="/api/v1/images",
-    tags=["Imagens"]
-)
-
-app.include_router(
-    questions.router,
-    prefix="/api/v1/questions",
-    tags=["Questões"]
-)
-
-app.include_router(
-    exams.router,
-    prefix="/api/v1/exams",
-    tags=["Provas"]
-)
+# --------------------------------------------------------------------------------
+# 9. EXECUÇÃO DIRETA (DEBUG)
+# --------------------------------------------------------------------------------
+if __name__ == "__main__":
+    import uvicorn
+    # Roda o servidor na porta 8000
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

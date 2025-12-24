@@ -10,8 +10,11 @@ from app.core.config import settings
 pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 
 
+# --- ALTERAÇÃO AQUI NA ASSINATURA DA FUNÇÃO ---
 def create_access_token(
-    subject: Union[str, Any], expires_delta: Optional[timedelta] = None
+    subject: Union[str, Any], 
+    extra_data: dict = None,  # Aceita um dicionário de dados extras
+    expires_delta: Optional[timedelta] = None
 ) -> str:
     """Cria token de acesso JWT."""
     if expires_delta:
@@ -21,7 +24,14 @@ def create_access_token(
             minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
       
+    # Cria o dicionário base
     to_encode = {"exp": expire, "sub": str(subject), "type": "access"}
+    
+    # --- NOVO BLOCO: Se tiver dados extras, adiciona ao token ---
+    if extra_data:
+        to_encode.update(extra_data)
+    # -----------------------------------------------------------
+
     encoded_jwt = jwt.encode(
         to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
     )
