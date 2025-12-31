@@ -1,149 +1,127 @@
-from typing import Optional
+"""
+Módulo de Dependências (app/dependencies.py).
+Responsável por injetar o usuário atual nas rotas e verificar permissões (Roles).
+"""
+from typing import List
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError
 from sqlalchemy.orm import Session
 
-from app.core.security import decode_token
+# Importa o esquema de segurança e o decodificador que configuramos no security.py
+from app.core.security import decode_token, oauth2_scheme
 from app.database import get_db
 from app.models.user import User, UserRole
-from app.core.config import settings
 
-# Security scheme
-security = HTTPBearer(auto_error=False)
+# ==============================================================================
+# 1. OBTER USUÁRIO ATUAL (Core Authentication)
+# ==============================================================================
 
- 
 async def get_current_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    token: str = Depends(oauth2_scheme), # Usa o esquema OAuth2 para integrar com Swagger
     db: Session = Depends(get_db)
 ) -> User:
-    """Dependency para obter usuário atual autenticado."""
-    
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token de acesso requerido",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
+    """
+    Valida o Token JWT, verifica se o usuário existe e está ativo.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Não foi possível validar as credenciais",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
     try:
-        # Decodifica o token
-        payload = decode_token(credentials.credentials)
+        # Decodifica o token usando a função do security.py
+        payload = decode_token(token)
         
-        # Verifica se é token de acesso
-        if payload.get("type") != "access":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Tipo de token inválido"
-            )
-        
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token inválido"
-            )
-         
+        if payload is None:
+            raise credentials_exception
+            
+        token_type: str = payload.get("type")
+        if token_type != "access":
+            raise credentials_exception
+            
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+
     except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token inválido ou expirado",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
+        raise credentials_exception
+
     # Busca o usuário no banco
     user = db.query(User).filter(User.id == int(user_id)).first()
     
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Usuário não encontrado"
-        )
-    
+    if user is None:
+        raise credentials_exception
+        
     if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Usuário inativo"
-        )
-    
+        raise HTTPException(status_code=400, detail="Usuário inativo")
+        
     return user
 
 
 async def get_current_active_user(
     current_user: User = Depends(get_current_user)
 ) -> User:
-    """Dependency para usuário ativo (alias para get_current_user)."""
+    """Alias para get_current_user, caso queira adicionar lógica extra de ativação no futuro."""
     return current_user
 
 
-def require_roles(*roles: UserRole):
-    """Dependency factory para exigir roles específicos."""
+# ==============================================================================
+# 2. FACTORY DE PERMISSÕES (Role Based Access Control)
+# ==============================================================================
+
+def require_roles(allowed_roles: List[UserRole]):
+    """
+    Cria uma dependência que verifica se o usuário tem um dos papéis permitidos.
+    Uso: Depends(require_roles([UserRole.ADMIN, UserRole.PROFESSOR]))
+    """
     def role_checker(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role not in roles:
+        if current_user.role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Permissões insuficientes"
+                detail=f"Permissões insuficientes. Necessário: {[role.value for role in allowed_roles]}"
             )
         return current_user
     
     return role_checker
 
 
-# Convenience dependencies para roles comuns
-def get_admin_user(current_user: User = Depends(require_roles(UserRole.ADMIN))) -> User:
-    """Dependency para usuários admin."""
+# ==============================================================================
+# 3. SHORTCUTS PARA ROLES COMUNS
+# Facilitam a importação nas rotas: @router.get("/", dependencies=[Depends(get_admin_user)])
+# ==============================================================================
+
+def get_admin_user(
+    current_user: User = Depends(require_roles([UserRole.ADMIN]))
+) -> User:
+    """Apenas Administradores."""
     return current_user
 
 
 def get_professor_user(
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.PROFESSOR))
+    current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.PROFESSOR]))
 ) -> User:
-    """Dependency para professores e admins."""
+    """Professores e Administradores."""
     return current_user
+
 
 def get_professor_or_revisor_user(
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles([UserRole.ADMIN, UserRole.PROFESSOR, UserRole.REVISOR]))
 ) -> User:
-    """Dependency para professores e revisores."""
-    if current_user.role not in [UserRole.PROFESSOR, UserRole.REVISOR]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Apenas professores e revisores podem acessar este recurso"
-        )
-    return current_user
-
-
-def get_professor_or_admin_user(
-    current_user: User = Depends(get_current_user)
-) -> User:
-    """Dependency para professores e admins."""
-    if current_user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Apenas professores e administradores podem acessar este recurso"
-        )
-    return current_user
-
-
-def get_revisor_or_admin_user(
-    current_user: User = Depends(get_current_user)
-) -> User:
-    """Dependency para revisores e admins."""
-    if current_user.role not in [UserRole.REVISOR, UserRole.ADMIN]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Apenas revisores e administradores podem acessar este recurso"
-        )
+    """Professores, Revisores e Admins (Staff de Conteúdo)."""
     return current_user
 
 
 def get_any_staff_user(
     current_user: User = Depends(get_current_user)
 ) -> User:
-    """Dependency para qualquer membro da equipe (não estudantes)."""
+    """
+    Qualquer membro da equipe (Admin, Professor, Revisor).
+    Bloqueia apenas STUDENT.
+    """
     if current_user.role == UserRole.STUDENT:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Apenas membros da equipe podem acessar este recurso"
+            detail="Estudantes não têm acesso a este recurso."
         )
     return current_user

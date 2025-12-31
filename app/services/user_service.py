@@ -1,39 +1,48 @@
 """
 Serviços de gerenciamento de usuários (Lógica de Negócio).
-Este arquivo contém as funções que acessam o banco de dados diretamente.
+Arquivo: app/services/user_service.py
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, func
+from fastapi import HTTPException, status
 
+# Imports dos Models e Schemas
 from app.models.user import User, UserRole
 from app.schemas.user import UserCreate, UserUpdate, UserRoleUpdate
 from app.core.security import get_password_hash
-from app.core.exceptions import NotFoundException, ConflictException
 
 class UserService:
-    """Classe contendo toda a lógica de manipulação de usuários."""
+    """
+    Classe contendo toda a lógica de manipulação de usuários.
+    Encapsula o acesso ao banco (SQLAlchemy).
+    """
     
     @staticmethod
     def create_user(db: Session, user_data: UserCreate, current_user: User) -> User:
         """
         Cria novo usuário (Apenas Admin).
-        Verifica se o email já existe antes de criar.
         """
+        # 1. Verifica duplicidade de email
         existing_user = db.query(User).filter(User.email == user_data.email).first()
         if existing_user:
-            raise ConflictException("Email já está em uso")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email já está em uso"
+            )
         
+        # 2. Prepara o objeto
         user = User(
             name=user_data.name,
             email=user_data.email,
-            password_hash=get_password_hash(user_data.password),
-            role=user_data.role,
-            is_active=user_data.is_active,
+            hashed_password=get_password_hash(user_data.password),
+            role=user_data.role or UserRole.STUDENT,
+            is_active=user_data.is_active if user_data.is_active is not None else True,
             is_email_verified=True # Assumimos verificado se criado por Admin
         )
         
+        # 3. Salva no banco
         db.add(user)
         db.commit()
         db.refresh(user)
@@ -51,13 +60,9 @@ class UserService:
     ) -> List[User]:
         """
         Lista usuários aplicando filtros de busca.
-        - Se is_active for True: Traz apenas os ativos.
-        - Se is_active for False: Traz apenas os inativos (excluídos).
-        - Se is_active for None: Traz TODOS.
         """
         query = db.query(User)
         
-        # Filtro de busca (Nome ou Email)
         if search:
             query = query.filter(
                 or_(
@@ -66,11 +71,9 @@ class UserService:
                 )
             )
         
-        # Filtro de Cargo
         if role:
             query = query.filter(User.role == role)
         
-        # Filtro de Status (Ativo/Inativo)
         if is_active is not None:
             query = query.filter(User.is_active == is_active)
         
@@ -78,15 +81,18 @@ class UserService:
     
     @staticmethod
     def get_user_by_id(db: Session, user_id: int) -> User:
-        """Busca usuário por ID ou lança erro 404 se não achar."""
+        """Busca usuário por ID."""
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
-            raise NotFoundException("Usuário não encontrado")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
         return user
     
     @staticmethod
     def get_user_by_email(db: Session, email: str) -> Optional[User]:
-        """Busca usuário por email (usado no login)."""
+        """Busca usuário por email (interno)."""
         return db.query(User).filter(User.email == email).first()
       
     @staticmethod
@@ -96,12 +102,18 @@ class UserService:
         user_data: UserUpdate,
         current_user: User
     ) -> User:
-        """Atualiza dados gerais do usuário (Nome, Email, etc)."""
+        """Atualiza dados gerais do usuário."""
         user = UserService.get_user_by_id(db, user_id)
         
-        # Converte o schema para dict, ignorando campos que não foram enviados
+        # Converte para dict removendo campos não enviados (None)
         update_data = user_data.dict(exclude_unset=True)
         
+        # Validação extra de email duplicado na edição
+        if "email" in update_data and update_data["email"] != user.email:
+             exists = db.query(User).filter(User.email == update_data["email"]).first()
+             if exists:
+                 raise HTTPException(status_code=400, detail="Email já em uso.")
+
         for field, value in update_data.items():
             setattr(user, field, value)
         
@@ -119,13 +131,15 @@ class UserService:
     ) -> User:
         """
         Atualiza APENAS o cargo do usuário.
-        Segurança: Admin não pode rebaixar a si mesmo.
         """
         user = UserService.get_user_by_id(db, user_id)
         
-        # Evita que o admin mude o próprio cargo e perca acesso acidentalmente
+        # Segurança: Admin não pode alterar o próprio cargo por aqui para não se bloquear
         if user.id == current_user.id:
-             raise ConflictException("Você não pode alterar seu próprio cargo nesta rota.")
+             raise HTTPException(
+                 status_code=status.HTTP_409_CONFLICT,
+                 detail="Você não pode alterar seu próprio cargo nesta rota."
+             )
 
         user.role = role_data.role
         db.commit()
@@ -135,50 +149,40 @@ class UserService:
     @staticmethod
     def delete_user(db: Session, user_id: int, current_user: User) -> User:
         """
-        Remove usuário.
-        CONFIGURAÇÃO ATUAL: HARD DELETE (Apaga do Banco).
+        Remove usuário (Soft Delete ou Hard Delete).
         """
         user = UserService.get_user_by_id(db, user_id)
         
-        # Segurança: Ninguém pode deletar a si mesmo
         if user.id == current_user.id:
-            raise ConflictException("Não é possível deletar sua própria conta")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Não é possível deletar sua própria conta"
+            )
         
-        # --- MUDANÇA FEITA AQUI ---
-        
-        # 1. Soft Delete (Desativado)
-        # user.is_active = False 
-        
-        # 2. Hard Delete (ATIVADO)
-        db.delete(user) 
-        
-        # --------------------------
-        
+        # --- MODO 1: SOFT DELETE (Recomendado para histórico) ---
+        user.is_active = False
         db.commit()
+        db.refresh(user) # Necessário para retornar o objeto atualizado
+        
+        # --- MODO 2: HARD DELETE (Apaga mesmo) ---
+        # db.delete(user)
+        # db.commit()
         
         return user
     
     @staticmethod
-    def get_user_stats(db: Session) -> dict:
-        """Gera estatísticas para o dashboard administrativo."""
+    def get_user_stats(db: Session) -> Dict[str, Any]:
+        """Gera estatísticas para o dashboard."""
         total_users = db.query(User).count()
         active_users = db.query(User).filter(User.is_active == True).count()
         
-        admins = db.query(User).filter(User.role == UserRole.ADMIN).count()
-        professors = db.query(User).filter(User.role == UserRole.PROFESSOR).count()
-        students = db.query(User).filter(User.role == UserRole.STUDENT).count()
-        
-        verified_emails = db.query(User).filter(User.is_email_verified == True).count()
+        # Agregação por cargo
+        roles_count = db.query(User.role, func.count(User.role)).group_by(User.role).all()
+        roles_dict = {role.value: count for role, count in roles_count}
         
         return {
-            "total_users": total_users,
-            "active_users": active_users,
-            "inactive_users": total_users - active_users,
-            "roles": {
-                "admins": admins,
-                "professors": professors,
-                "students": students
-            },
-            "verified_emails": verified_emails,
-            "unverified_emails": total_users - verified_emails
+            "total": total_users,
+            "active": active_users,
+            "inactive": total_users - active_users,
+            "by_role": roles_dict
         }

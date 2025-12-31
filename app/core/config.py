@@ -95,7 +95,7 @@ class Settings(BaseSettings):
         return v
     
     # ------------------------------------------------------------------------
-    # PROPRIEDADES AUXILIARES (AQUI ESTAVA O ERRO, ELAS VOLTARAM)
+    # PROPRIEDADES AUXILIARES 
     # ------------------------------------------------------------------------
     @property
     def is_development(self) -> bool:
