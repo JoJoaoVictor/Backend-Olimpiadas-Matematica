@@ -52,15 +52,21 @@ class Settings(BaseSettings):
     CORS_HEADERS: List[str] = ["*"]
     
     # ------------------------------------------------------------------------
-    # UPLOAD
+    # UPLOAD / STATIC
     # ------------------------------------------------------------------------
     MAX_FILE_SIZE: int = 10485760
     ALLOWED_IMAGE_EXTENSIONS: List[str] = ["jpg", "jpeg", "png", "gif", "svg"]
     UPLOAD_PATH: str = "./uploads"
     STATIC_PATH: str = "./static"
+
+    # URL base para servir arquivos estáticos
+    STATIC_URL: str = "/static"
+
+    # URL base para acesso aos uploads (usado no PDF para imagens)
+    UPLOAD_URL: str = "/uploads"
     
     # ------------------------------------------------------------------------
-    # REDIS & EMAIL (Atualizado)
+    # REDIS & EMAIL
     # ------------------------------------------------------------------------
     REDIS_URL: str = "redis://localhost:6379/0"
     
@@ -82,6 +88,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------------
     @validator("CORS_ORIGINS", pre=True)
     def assemble_cors_origins(cls, v):
+        # Converte string separada por vírgula em lista, se necessário
         if isinstance(v, str) and not v.startswith("["):
             return [i.strip() for i in v.split(",")]
         elif isinstance(v, (list, str)):
@@ -90,6 +97,7 @@ class Settings(BaseSettings):
     
     @validator("DATABASE_URL", pre=True)
     def assemble_database_url(cls, v, values):
+        # Garante que a URL do banco foi informada
         if not v:
             raise ValueError("DATABASE_URL é obrigatório")
         return v
@@ -118,6 +126,8 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
+    # Retorna instância única das configurações
     return Settings()
 
+# Instância global usada na aplicação
 settings = get_settings()

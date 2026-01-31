@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+
+  <!--
+    Template HTML responsável por gerar o PDF da prova.
+    Este arquivo é renderizado no backend (FastAPI) e processado
+    pelo Chromium em modo headless para exportação em PDF.
+  -->
+
+  <title>Prova - Olimpíada de Matemática</title>
+
+  <!-- ========================= -->
+  <!-- ESTILOS GERAIS DA PÁGINA -->
+  <!-- ========================= -->
+  <style>
+    /* Configurações globais do documento */
+    @page {
+      size: A4;
+      margin: 20mm 10mm 25mm 10mm;
+    }
+
+    body {
+      font-family: "Times New Roman", serif;
+      font-size: 12px;
+      color: #000;
+    }
+
+    /* ========================= */
+    /* CABEÇALHO E RODAPÉ FIXOS  */
+    /* ========================= */
+
+    header {
+      position: fixed;
+      top: -15mm;
+      left: 0;
+      right: 0;
+      height: 40mm;
+      text-align: center;
+    }
+
+    footer {
+      position: fixed;
+      bottom: -15mm;
+      left: 0;
+      right: 0;
+      height: 25mm;
+      text-align: center;
+    }
+
+    header img {
+      width: 100%;
+      height: auto;
+    }
+
+    footer img {
+      width: 90%;
+      height: auto;
+    }
+
+    /* ========================= */
+    /* TÍTULO E IDENTIFICAÇÃO   */
+    /* ========================= */
+
+    .exam-title {
+      font-weight: bold;
+      font-size: 10px;
+      margin-top: 28mm;
+      margin-bottom: 4mm;
+      text-align: center;
+    }
+
+    .student-info {
+      font-size: 10px;
+      margin-bottom: 6mm;
+    }
+
+    .student-info div {
+      margin-bottom: 2mm;
+    }
+
+    /* ========================= */
+    /* CONTAINER EM DUAS COLUNAS */
+    /* ========================= */
+
+    .columns {
+      column-count: 2;
+      column-gap: 10mm;
+    }
+
+    /* ========================= */
+    /* QUESTÕES                 */
+    /* ========================= */
+
+    .question {
+      break-inside: avoid;
+      margin-bottom: 8px;
+      text-align: justify;
+    }
+
+    .question-number {
+      font-weight: bold;
+    }
+
+    /* ========================= */
+    /* IMAGEM DA QUESTÃO        */
+    /* ========================= */
+
+    .question-image {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 6px auto;
+      page-break-inside: avoid;
+    }
+
+    /* ========================= */
+    /* ALTERNATIVAS             */
+    /* ========================= */
+
+    .alternatives {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-left: 10px;
+      margin-top: 4px;
+    }
+
+    .alternative {
+      white-space: nowrap;
+    }
+
+    /* ========================= */
+    /* GABARITO E RESOLUÇÕES    */
+    /* ========================= */
+
+    .answers-title {
+      page-break-before: always;
+      text-align: center;
+      font-size: 14px;
+      font-weight: bold;
+      margin-bottom: 10mm;
+    }
+
+    .resolution {
+      break-inside: avoid;
+      margin-bottom: 10px;
+    }
+
+    .resolution-title {
+      font-weight: bold;
+    }
+
+    .correct-answer {
+      font-weight: bold;
+      margin-top: 2px;
+    }
+
+    .resolution-text {
+      color: #c00000;
+      font-style: italic;
+      margin-top: 2px;
+      text-align: justify;
+    }
+  </style>
+
+  <!-- ========================= -->
+  <!-- KATEX PARA LATEX         -->
+  <!-- ========================= -->
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex/dist/contrib/auto-render.min.js"></script>
+</head>
+
+<body>
+
+  <!-- ========================= -->
+  <!-- CABEÇALHO FIXO            -->
+  <!-- ========================= -->
+  <header>
+    <img src="{{ static_url }}/img/heder.PNG" alt="Cabeçalho UNEMAT">
+  </header>
+
+  <!-- ========================= -->
+  <!-- RODAPÉ FIXO               -->
+  <!-- ========================= -->
+  <footer>
+    <img src="{{ static_url }}/img/footer.PNG" alt="Rodapé UNEMAT">
+  </footer>
+
+  <!-- ========================= -->
+  <!-- TÍTULO DA PROVA           -->
+  <!-- ========================= -->
+  <div class="exam-title">
+    OLIMPÍADA DE MATEMÁTICA DA UNEMAT – {{ exam.year }} –
+    {{ exam.fase|upper if exam.fase else 'FASE INDEFINIDA' }} –
+    {{ exam.school_year if exam.school_year else 'Anos Diversos' }}
+  </div>
+
+  <!-- ========================= -->
+  <!-- IDENTIFICAÇÃO DO ALUNO   -->
+  <!-- ========================= -->
+  <div class="student-info">
+    <div>ALUNO(A): ________________________________________________________________</div>
+    <div>ESCOLA: _______________________________________ &nbsp;&nbsp; MUNICÍPIO: ________________________</div>
+  </div>
+
+  <!-- ========================= -->
+  <!-- QUESTÕES (DUAS COLUNAS)  -->
+  <!-- ========================= -->
+  <div class="columns">
+    {% for q in questions %}
+      <div class="question">
+        <span class="question-number">{{ loop.index }})</span>
+        {{ q.question_statement | safe }}
+
+        {% if q.image %}
+          <img
+            src="{{ upload_url }}/{{ q.image.file_path }}"
+            class="question-image"
+            alt="Imagem da questão"
+          >
+        {% endif %}
+
+        {% if q.alternatives %}
+          <div class="alternatives">
+            {% for key, val in q.alternatives.items() %}
+              <div class="alternative">
+                <strong>{{ key }})</strong> {{ val }}
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+
+  <!-- ========================= -->
+  <!-- GABARITO E RESOLUÇÕES    -->
+  <!-- ========================= -->
+  {% if include_answers %}
+    <div class="answers-title">Gabarito e Resoluções</div>
+
+    <div class="columns">
+      {% for q in questions %}
+        <div class="resolution">
+          <div class="resolution-title">{{ loop.index }}) Resolução:</div>
+
+          {% if q.correct_alternative %}
+            <div class="correct-answer">Gabarito: {{ q.correct_alternative }}</div>
+          {% endif %}
+
+          <div class="resolution-text">
+            {{ q.detailed_resolution if q.detailed_resolution else 'Sem resolução detalhada.' }}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <!-- ========================= -->
+  <!-- ATIVAÇÃO DO LATEX        -->
+  <!-- ========================= -->
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      renderMathInElement(document.body, {
+        delimiters: [
+          { left: "$$", right: "$$", display: true },
+          { left: "$", right: "$", display: false },
+          { left: "\\(", right: "\\)", display: false },
+          { left: "\\[", right: "\\]", display: true }
+        ],
+        throwOnError: false
+      });
+    });
+  </script>
+
+</body>
+</html>

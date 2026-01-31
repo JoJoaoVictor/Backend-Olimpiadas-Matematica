@@ -92,10 +92,78 @@ class ExamFilters(BaseModel):
 
 
 class ExamPDFRequest(BaseModel):
-    """Schema para geração de PDF."""
-    include_answers: bool = Field(default=False, description="Incluir gabarito")
+    """
+    Schema para requisição de geração de PDF.
+    
+    Usado tanto para:
+    1. Gerar PDF de prova salva no banco (GET /exams/{id}/pdf)
+    2. Gerar PDF "on-the-fly" do frontend (POST /exams/generate_pdf)
+    
+    Campos:
+    - exam_id: ID da prova no banco (None se geração on-the-fly)
+    - questions: Lista vazia (questões vêm do mock_exam ou do banco)
+    - fase: Fase da olimpíada (ex: "1ª FASE", "2ª FASE")
+    - anos: Lista de anos escolares (ex: ["4º", "5º"])
+    - escola: Nome da escola (opcional, para campo no cabeçalho)
+    - municipio: Nome do município (opcional, para campo no cabeçalho)
+    - ano: Ano da olimpíada (ex: 2024)
+    - include_answers: Se True, inclui página de gabarito ao final
+    - cover_info: Informações extras da capa (logo, instituição, título)
+    """
+    exam_id: Optional[int] = Field(
+        default=None, 
+        description="ID da prova no banco (None para geração on-the-fly)"
+    )
+    questions: List[dict] = Field(
+        default=[], 
+        description="Lista de questões (vazio, vem do mock ou banco)"
+    )
+    fase: Optional[str] = Field(
+        default="1ª FASE", 
+        description="Fase da olimpíada"
+    )
+    anos: Optional[List[str]] = Field(
+        default=[], 
+        description="Anos escolares (ex: ['4º', '5º'])"
+    )
+    escola: Optional[str] = Field(
+        default="", 
+        description="Nome da escola (para campo no cabeçalho)"
+    )
+    municipio: Optional[str] = Field(
+        default="", 
+        description="Nome do município (para campo no cabeçalho)"
+    )
+    ano: Optional[int] = Field(
+        default=2024, 
+        description="Ano da olimpíada"
+    )
+    include_answers: bool = Field(
+        default=False, 
+        description="Incluir gabarito ao final"
+    )
     cover_info: Optional[dict] = Field(
         default=None, 
-        description="Informações da capa (escola, aluno, etc)"
+        description="Informações da capa (logo_path, institution, exam_title)"
     )
 
+
+class ExamHeaderInfo(BaseModel):
+    """Detalhes do cabeçalho da prova (Logos, nomes, campos)."""
+    school_name: Optional[str] = Field("Nome da Escola", description="Nome da instituição")
+    teacher_name: Optional[str] = Field(None, description="Nome do professor")
+    title: str = Field(..., description="Título da Prova (ex: Avaliação Bimestral)")
+    subtitle: Optional[str] = Field(None, description="Subtítulo (ex: Matemática - 2º Ano)")
+    student_field: bool = Field(True, description="Incluir campo para nome do aluno")
+    class_field: bool = Field(True, description="Incluir campo para turma/série")
+    date_field: bool = Field(True, description="Incluir campo para data")
+
+
+class ExamGenerateRequest(BaseModel):
+    """
+    Payload para gerar PDF 'on-the-fly' (Montar Prova).
+    O frontend envia os IDs e as configs, o backend devolve o PDF.
+    """
+    header_info: ExamHeaderInfo
+    question_ids: List[int] = Field(..., min_items=1, description="Lista de IDs das questões selecionadas")
+    include_answers: bool = Field(False, description="Se true, gera uma página extra com o gabarito")
