@@ -16,14 +16,57 @@ import io
 import json
 import base64
 import re
+import logging
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
 
+logger = logging.getLogger(__name__)
+
+try:
+    from PyPDF2 import PdfReader, PdfWriter
+except ImportError:
+    PdfReader = PdfWriter = None
+
 
 class AdvancedPDFGenerator:
+
+    # Mínimo de caracteres para considerar página com conteúdo (páginas só header/footer = 0)
+    _BLANK_PAGE_TEXT_THRESHOLD = 50
+
+    @staticmethod
+    def _remove_blank_pages(pdf_bytes: bytes) -> bytes:
+        """
+        Remove páginas em branco (apenas header/footer) do PDF gerado.
+        Páginas com menos de _BLANK_PAGE_TEXT_THRESHOLD caracteres são consideradas vazias.
+        Não altera CSS/HTML - correção pós-geração.
+        """
+        if PdfReader is None or PdfWriter is None:
+            return pdf_bytes
+        try:
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            writer = PdfWriter()
+            for page in reader.pages:
+                text = page.extract_text() or ""
+                # Remove espaços; páginas só com header/footer têm pouco ou nenhum texto
+                clean_len = len(re.sub(r'\s+', '', text))
+                if clean_len >= AdvancedPDFGenerator._BLANK_PAGE_TEXT_THRESHOLD:
+                    writer.add_page(page)
+            if len(writer.pages) == 0:
+                return pdf_bytes  # Fallback: mantém original se todas fossem "vazias"
+            writer.add_metadata({
+                '/Title': 'Prova UNEMAT',
+                '/Author': 'UNEMAT'
+            })
+            out = io.BytesIO()
+            writer.write(out)
+            return out.getvalue()
+        except Exception as e:
+            logger.exception("Failed to remove blank pages from PDF")
+            return pdf_bytes
     
     @staticmethod
     def _get_field(obj: Any, field_name: str, default: Any = None) -> Any:
@@ -32,15 +75,82 @@ class AdvancedPDFGenerator:
             return obj.get(field_name, default)
         return getattr(obj, field_name, default)
 
+    # ============================================================================
+# PATCH CORRETO - Substituir APENAS linhas 78-112 do pdf_generator.py
+# ============================================================================
+# 
+# ATENÇÃO: NÃO delete a função _get_field (linha 72-76)!
+# Substitua APENAS a função _sanitize_latex (linha 78-112)
+#
+# ============================================================================
+
     @staticmethod
     def _sanitize_latex(text: str) -> str:
         """
-        Normaliza strings LaTeX do banco
-        Converte escapes duplos (\\\\) para simples (\\)
+        Normaliza strings LaTeX do banco - corrige TODOS os casos problemáticos.
+        OTIMIZADO: Detecta duplo escape automaticamente (questão 9197).
+        Ordem CRÍTICA: mais específico primeiro (questões b042, f855, etc).
+        
+        FIX 2025-02-05: Proteção contra LaTeX quebrado que causa layout cascata
         """
         if not text:
             return ""
-        return text.replace('\\\\', '\\')
+        
+        # Remove BOM do UTF-8 se presente
+        if text.startswith('\ufeff'):
+            text = text[1:]
+        
+        # OTIMIZAÇÃO: Detectar e corrigir LaTeX duplo/triplo escape
+        # Problema: "\\\\(\\pi r^2\\)" → deve ser "\\(\\pi r^2\\)"
+        # Busca padrão: 3+ barras antes de parêntese/colchete
+        text = re.sub(r'\\{3,}\(', r'\\(', text)
+        text = re.sub(r'\\{3,}\)', r'\\)', text)
+        text = re.sub(r'\\{3,}\[', r'\\[', text)
+        text = re.sub(r'\\{3,}\]', r'\\]', text)
+        
+        # Ordem CRÍTICA: mais específico primeiro
+        replacements = [
+            ('\\\\\\(', '\\('), ('\\\\\\)', '\\)'),
+            ('\\\\\\[', '\\['), ('\\\\\\]', '\\]'),
+            ('\\\\times', '\\times'), ('\\\\frac', '\\frac'),
+            ('\\\\sqrt', '\\sqrt'), ('\\\\pi', '\\pi'),
+            ('\\\\\\$', '\\$'),
+        ]
+        for old, new in replacements:
+            text = text.replace(old, new)
+        
+        # Final: escapes duplos para simples
+        text = text.replace('\\\\', '\\')
+        
+        # ========== PROTEÇÃO CONTRA LATEX QUEBRADO (FIX LAYOUT CASCATA) ==========
+        
+        # 1. PROTEGER R$ (valores monetários) - Principal causa do problema
+        # "R$ 13,00" → MathJax vê "$13,00$" → SVG quebrado → layout cascata
+        text = re.sub(r'R\$\s*(?=\d)', r'R\\$ ', text)
+        
+        # 2. REMOVER FÓRMULAS VAZIAS (geram SVG com altura=0 → quebra column-count)
+        text = re.sub(r'\$\s{0,3}\$', '', text)           # Remove $ $, $  $, $   $
+        text = re.sub(r'\\\(\s{0,3}\\\)', '', text)       # Remove \( \), \(  \), etc.
+        
+        # 3. BALANCEAR DELIMITADORES $ (remove $ ímpar que quebra parser)
+        dollar_count = text.count('$') - text.count('\\$')  # Ignora \$ escapado
+        if dollar_count % 2 != 0:
+            idx = text.rfind('$')
+            if idx != -1 and (idx == 0 or text[idx-1] != '\\'):
+                text = text[:idx] + text[idx+1:]
+        
+        # 4. REMOVER DELIMITADORES \( \) ÓRFÃOS (desbalanceados)
+        open_paren = len(re.findall(r'(?<!\\)\\\(', text))
+        close_paren = len(re.findall(r'(?<!\\)\\\)', text))
+        if open_paren != close_paren:
+            text = re.sub(r'(?<!\\)\\\(', '', text)
+            text = re.sub(r'(?<!\\)\\\)', '', text)
+        
+        # 5. LIMPAR ESPAÇOS EM FÓRMULAS (causa altura errada no MathJax)
+        text = re.sub(r'\$\s+', '$', text)      # Remove espaço após $
+        text = re.sub(r'\s+\$', '$', text)      # Remove espaço antes de $
+        
+        return text
 
     @staticmethod
     def _load_static_img_base64(filename: str) -> str:
@@ -175,15 +285,21 @@ class AdvancedPDFGenerator:
     @staticmethod
     def _parse_alternatives(question: Any) -> Dict[str, str]:
         """
-        Extrai alternativas e retorna dict limpo
-        Retorna: {"a": "texto", "b": "texto", ...}
+        Extrai alternativas e retorna dict limpo.
+        OTIMIZADO: Remove espaços extras automaticamente (problema de 5+ questões).
+        Retorna: {"A": "texto", "B": "texto", ...}
         """
         alternatives_raw = AdvancedPDFGenerator._get_field(question, "alternatives")
         
         if isinstance(alternatives_raw, dict):
-            return alternatives_raw
+            # OTIMIZAÇÃO: Remove espaços extras em valores dict
+            return {k: str(v).strip() if v else "" for k, v in alternatives_raw.items()}
         
         if isinstance(alternatives_raw, str):
+            # Se vazio, retorna dict vazio (problema: 4 questões com alternatives="")
+            if not alternatives_raw or not alternatives_raw.strip():
+                return {}
+            
             try:
                 # Remove aspas extras e espaços em branco
                 clean = alternatives_raw.strip()
@@ -198,11 +314,13 @@ class AdvancedPDFGenerator:
                 # Tenta fazer parse do JSON
                 loaded = json.loads(clean)
                 if isinstance(loaded, dict):
-                    return loaded
+                    # OTIMIZAÇÃO: Remove espaços extras após parse
+                    return {k: str(v).strip() if v else "" for k, v in loaded.items()}
                 elif isinstance(loaded, str):
                     # Se for string, tenta parse novamente
                     try:
-                        return json.loads(loaded)
+                        parsed = json.loads(loaded)
+                        return {k: str(v).strip() if v else "" for k, v in parsed.items()}
                     except:
                         pass
             except Exception as e:
@@ -214,6 +332,7 @@ class AdvancedPDFGenerator:
             pattern = r'["\']?([A-E])["\']?\s*:\s*["\']?([^,"\']+)["\']?'
             matches = re.findall(pattern, alternatives_raw, re.IGNORECASE)
             if matches:
+                # OTIMIZAÇÃO: Remove espaços extras no fallback também
                 return {key.upper(): value.strip() for key, value in matches}
         
         return {}
@@ -221,57 +340,59 @@ class AdvancedPDFGenerator:
     @staticmethod
     def _extract_correct_letter(correct_alternative: str) -> str:
         """
-        Extrai a letra da alternativa correta do formato do banco
-        Exemplos: 
-        - "e) 1200" -> "E"
-        - "B) 4" -> "B"
-        - "c) 8" -> "C"
-        - " b) 42" -> "B"
-        - "DE quem mais usa somente celular" -> "" (sem letra)
+        Extrai letra da alternativa correta (OTIMIZADO COM FALLBACK ROBUSTO).
+        
+        Dados já migrados para formato normalizado: "A", "B", "C", "D", "E"
+        Mas mantém fallback para dados antigos e inválidos (3 questões: 42a7, a3d7, f855).
+        
+        Performance:
+        - String comparison (super rápido) em vez de 3 regex
+        - ~95% dos casos: 1 strip + 1 comparação
+        - Fallback ROBUSTO: encontra PRIMEIRA letra A-E em qualquer lugar da string
         """
         if not correct_alternative:
             return ""
         
-        # Remove espaços no início e fim
         text = correct_alternative.strip()
+        if not text:
+            return ""
         
-        # Padrão 1: letra seguida de ) ou .
-        # Ex: "e) 1200", "B) 4", "c) 8", "a."
-        match = re.match(r'^([A-Ea-e])[\)\.]', text)
-        if match:
-            return match.group(1).upper()
+        letter = text.upper()
         
-        # Padrão 2: apenas a letra no início (pode ter espaço após)
-        # Ex: "a 1200", "B 4"
-        match = re.match(r'^([A-Ea-e])\b', text)
-        if match:
-            return match.group(1).upper()
+        # Caso comum (99%): dados já normalizados - apenas uma letra
+        if letter in "ABCDE":
+            return letter
         
-        # Padrão 3: letra entre parênteses
-        # Ex: "(e) 1200", "(B) 4"
-        match = re.match(r'^\(([A-Ea-e])\)', text)
-        if match:
-            return match.group(1).upper()
+        # FALLBACK ROBUSTO: Para questões com dados inválidos
+        # Exemplos: "DE quem mais usa somente celular" → extrai "D"
+        #           "44 anos" → procura primeira letra A-E
+        #           "R$ 160,00" → procura primeira letra A-E
+        for char in text:
+            if char.upper() in "ABCDE":
+                return char.upper()
         
+        # Se nada encontrado, retorna vazio
         return ""
 
     @staticmethod
     def _render_questions_html(questions: List[Any], include_resolution: bool = False) -> str:
         """
         Renderiza HTML das questões
-        - SEM resolução: todas as alternativas normais (em preto)
-        - COM resolução: todas as alternativas, com a correta em vermelho + resolução
+        CORREÇÃO: Escapa caracteres problemáticos para HTML
         """
         html_parts = []
         
         for i, q in enumerate(questions, 1):
-            # DEBUG: Verificar TODOS os campos da questão
+            
             # Enunciado (sempre preto)
             raw_stmt = (
                 AdvancedPDFGenerator._get_field(q, "question_statement") or
                 AdvancedPDFGenerator._get_field(q, "questionStatement", "")
             )
             statement = AdvancedPDFGenerator._sanitize_latex(raw_stmt)
+            
+            # CORREÇÃO: Escapar caracteres HTML problemáticos
+            statement = statement.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             
             # Imagem da questão
             q_img_raw = AdvancedPDFGenerator._get_field(q, "image")
@@ -295,33 +416,30 @@ class AdvancedPDFGenerator:
                     val = alts_dict[key]
                     if val:
                         sanitized = AdvancedPDFGenerator._sanitize_latex(str(val))
+                        # CORREÇÃO: Escapar HTML nas alternativas também
+                        sanitized = sanitized.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                         
                         if include_resolution and key.upper() == correct_letter.upper():
-                            # Na versão COM resolução: alternativa correta em vermelho
                             alts_items.append(f'<span class="alt-item-red">{key}) {sanitized}</span>')
                         else:
-                            # Na versão SEM resolução: todas em preto
-                            # Na versão COM resolução: alternativas incorretas em preto
                             alts_items.append(f'<span class="alt-item">{key}) {sanitized}</span>')
                 
                 alts_html = f'<div class="alternativas">{" ".join(alts_items)}</div>'
             
-            # Resolução (apenas na versão COM resolução) - TEXTO VERMELHO
+            # Resolução (apenas na versão COM resolução)
             resolution_html = ""
             if include_resolution:
                 # Busca a resolução DIRETAMENTE do objeto da questão
                 # Testa VÁRIOS nomes possíveis
                 raw_res = ""
-                
-                # Lista de possíveis nomes de campo
                 possible_fields = [
-                    "detailedResolution",  # camelCase do payload
-                    "detailed_resolution", # snake_case do banco
-                    "resolution",          # nome alternativo
-                    "resolucao",           # em português
-                    "solucao",             # outro nome em português
-                    "answerExplanation",   # explicação da resposta
-                    "explanation"          # explicação
+                    "detailedResolution",
+                    "detailed_resolution",
+                    "resolution",
+                    "resolucao",
+                    "solucao",
+                    "answerExplanation",
+                    "explanation"
                 ]
                 
                 for field in possible_fields:
@@ -334,6 +452,8 @@ class AdvancedPDFGenerator:
                     raw_res = "Sem resolução disponível"
                     
                 resolution = AdvancedPDFGenerator._sanitize_latex(raw_res)
+                # CORREÇÃO CRÍTICA: Escapar HTML na resolução
+                resolution = resolution.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
                 
                 resolution_html = f"""
                 <div class="resolucao-box">
@@ -387,276 +507,298 @@ class AdvancedPDFGenerator:
         questions_com_resolucao = AdvancedPDFGenerator._render_questions_html(questions, True)
         
         html_content = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <title>Prova UNEMAT </title>
-                
-                <script>
-                    window.MathJax = {{
-                        loader: {{ load: ['output/svg'] }},
-                        tex: {{ 
-                            inlineMath: [['$', '$'], ['\\\\(', '\\\\)']], 
-                            displayMath: [['$$', '$$']] 
-                        }},
-                        svg: {{ fontCache: 'global' }},
-                        startup: {{ typeset: false }}
-                    }};
-                </script>
-                <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-svg.js"></script>
-                
-                <style>
-                    /* ========== CONFIGURAÇÃO GLOBAL ========== */
-                    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                    
-                    /* Configuração da página e margens */
-                    @page {{
-                        size: A4 portrait;
-                        margin: 5mm 10mm 5mm 10mm; 
-                    }}
-                    
-                    body {{
-                        font-family: 'Arial', Times, serif;
-                        font-size: 14pt;
-                        line-height: 1.4;
-                        color: #000;
-                        background: #fff;
-                    }}
-
-                    /* ========== ESTRUTURA: TABELA DE IMPRESSÃO ========== */
-                    .print-table {{
-                        width: 100%;
-                        border-collapse: collapse;
-                    }}
-                    
-                    .print-table thead {{ display: table-header-group; }}
-                    .print-table tfoot {{ display: table-footer-group; }}
-                    .print-table tr {{ page-break-inside: avoid; }}
-
-                    /* ========== HEADER (Cabeçalho) ========== */
-                    .header-space {{
-                        width: 100%;
-                        text-align: center;
-                        margin-bottom: 2mm;
-                    }}
-
-                    .header-img {{
-                        width: 200mm;
-                        height: auto;
-                        max-width: 100%; 
-                        margin: 0 auto;
-                    }}
-
-                    /* ========== FOOTER (Rodapé) - CORREÇÃO APLICADA ========== */
-                    /* 1. O conteúdo do rodapé (imagem) agora é fixo no bottom */
-                    .footer-space {{
-                        position: fixed;   /* Força a ficar na tela, independente da tabela */
-                        bottom: 0;         /* Cola no fundo da área de margem */
-                        left: 0;
-                        width: 100%;
-                        text-align: center;
-                        z-index: 1000;
-                        margin: 0;         /* Remove margens para calcular exato */
-                    }}
-
-                    /* 2. A célula do tfoot serve apenas para RESERVAR ESPAÇO no fluxo do texto.
-                          Isso impede que as questões desçam até o fundo e fiquem atrás da imagem do rodapé. */
-                    .print-table tfoot td {{
-                        height: 30mm;      /* Altura reservada (ajuste conforme a altura da sua img) */
-                        border: none;
-                        vertical-align: bottom;
-                    }}
-
-                    .footer-img {{
-                        width: 160mm;
-                        height: auto;
-                        max-width: 100%;
-                        margin: 0 auto;
-                    }}
-
-                    /* ========== CONTEÚDO ========== */
-                    .content-wrapper {{
-                        width: 100%;
-                    }}
-
-                    .titulo-prova {{
-                        font-size: 14pt;
-                        font-weight: bold;
-                        margin: 0 0 1mm 33mm;
-                        text-align: left;
-                    }}
-
-                    .campos-aluno {{
-                        font-size: 14pt;
-                        margin: 0 0 5mm 8mm;
-                    }}
-
-                    .campos-aluno p {{
-                        margin-bottom: 1mm;
-                    }}
-
-                    /* ========== LAYOUT DE 2 COLUNAS ========== */
-                    .content {{
-                        column-count: 2;
-                        column-gap: 5mm;
-                        text-align: justify;
-                        margin: 0 4mm 15mm 4mm;
-                    }}
-
-                    .question-box {{
-                        break-inside: avoid;
-                        page-break-inside: avoid;
-                        margin-bottom: 2mm;
-                        display: inline-block; 
-                        width: 100%;
-                    }}
-
-                    .enunciado {{
-                        font-family: 'Arial', Times, serif;
-                        font-size: 14pt;
-                        margin-bottom: 3mm;
-                        text-align: justify;
-                        line-height: 1.3;
-                    }}
-
-                    .question-img {{
-                        max-width: 100%;
-                        max-height: 70mm;
-                        display: block;
-                        margin: 3mm auto;
-                        border: 1px solid #ddd;
-                        padding: 1mm;
-                    }}
-
-                    /* Alternativas */
-                    .alternativas {{
-                        font-family: 'Arial', Times, serif;
-                        font-size: 14pt;
-                        margin-top: 1.5mm;
-                        margin-bottom: 1.5mm;
-                        display: flex;
-                        flex-wrap: wrap;
-                        gap: 6mm;  
-                    }} 
-
-                    .alt-item {{
-                        white-space: nowrap;
-                        color: #000;
-                        flex-shrink: 0;
-                    }}
-
-                    .alt-item-red {{
-                        white-space: nowrap;
-                        color: #cc0000;
-                        font-weight: bold;
-                        flex-shrink: 0;
-                    }}
-
-                    /* ========== RESOLUÇÕES ========== */
-                    .resolucao-box {{
-                        margin-top: 1mm;
-                        margin-bottom: 5mm;
-                    }}
-
-                    .resolucao-label {{
-                        font-family: 'Arial', Times, serif;
-                        font-size: 14pt;
-                        margin-bottom: 1mm;
-                        color: #cc0000;
-                        font-weight: bold;
-                    }}
-
-                    .resolucao-text {{
-                        color: #cc0000;
-                        font-size: 14pt;
-                        line-height: 1.3;
-                    }}
-
-                    .titulo-resolucoes {{
-                        display: none;
-                    }}
-                    
-                    .page-break {{
-                        page-break-after: always;
-                        display: block;
-                        height: 1px;
-                    }}
-
-                </style>
-            </head>
-            <body>
-                <table class="print-table">
-                    
-                    <thead>
-                        <tr>
-                            <td>
-                                <div class="header-space">
-                                    {f'<img src="{header_img}" class="header-img" />' if header_img else ''}
-                                </div>
-                            </td>
-                        </tr>
-                    </thead>
-
-                    <tfoot>
-                        <tr>
-                            <td>
-                                <div class="footer-space">
-                                    {f'<img src="{footer_img}" class="footer-img" />' if footer_img else ''}
-                                </div>
-                            </td>
-                        </tr>
-                    </tfoot>
-
-                    <tbody>
-                        <tr>
-                            <td>
-                                <div class="content-wrapper">
-                                    
-                                    <div class="titulo-prova">{titulo}</div>
-                                    <div class="campos-aluno">
-                                        <p><strong>ALUNO(A):</strong>___________________________________________________________________________</p>
-                                        <p><strong>ESCOLA:</strong> _________________________________________ <strong>MUNICÍPIO:</strong> ________________________</p>
-                                    </div>
-                                    
-                                    <div class="content">
-                                        {questions_sem_resolucao}
-                                    </div>
-
-                                    <div class="page-break"></div>
-
-                                    <div class="titulo-prova">{titulo}</div>
-                                    <div class="campos-aluno">
-                                        <p><strong>ALUNO(A):</strong>____________________________________________________________________________</p>
-                                        <p><strong>ESCOLA:</strong> _________________________________________ <strong>MUNICÍPIO:</strong> ________________________</p>
-                                    </div>
-                                    
-                                    <div class="content">
-                                        {questions_com_resolucao}
-                                    </div>
-
-                                </div>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </body>
-            </html>
-            """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Prova UNEMAT</title>
+    <script>
+        window.MathJax = {{
+            loader: {{ load: ['output/svg'] }},
+            tex: {{ 
+                inlineMath: [['$', '$'], ['\\\\(', '\\\\)']], 
+                displayMath: [['$$', '$$']] 
+            }},
+            svg: {{ fontCache: 'global' }},
+            startup: {{ typeset: false }}
+        }};
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-svg.js"></script>
+    
+    <style>
+        /* ========== CONFIGURAÇÃO GLOBAL ========== */
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         
-        # ========== GERAÇÃO DO PDF VIA PLAYWRIGHT ==========
+        @page {{
+            size: A4 portrait;
+            margin: 5mm 10mm 5mm 10mm;
+        }}
+        
+        body {{
+            font-family: 'Arial', Times, serif;
+            font-size: 14pt;
+            line-height: 1.4;
+            color: #000;
+            background: #fff;
+        }}
+
+        /* ========== ESTRUTURA: TABELA DE IMPRESSÃO ========== */
+        .print-table {{
+            width: 100%;
+            border-collapse: collapse;
+        }}
+        
+        .print-table thead {{
+            display: table-header-group;
+        }}
+        
+        .print-table tfoot {{
+            display: table-footer-group;
+        }}
+        
+        .print-table tr {{
+            page-break-inside: avoid;
+        }}
+
+        /* ========== HEADER (Cabeçalho) ========== */
+        .header-space {{
+            width: 100%;
+            text-align: center;
+            margin-bottom: 2mm;
+        }}
+
+        .header-img {{
+            width: 200mm;
+            height: auto;
+            max-width: 100%;
+            margin: 0 auto;
+        }}
+
+        /* ========== FOOTER (Rodapé) ========== */
+        .footer-space {{
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            z-index: 1000;
+            margin: 0;
+        }}
+
+        .print-table tfoot td {{
+            height: 30mm;
+            border: none;
+            vertical-align: bottom;
+        }}
+
+        .footer-img {{
+            width: 160mm;
+            height: auto;
+            max-width: 100%;
+            margin: 0 auto;
+        }}
+
+        /* ========== CONTEÚDO ========== */
+        .content-wrapper {{
+            width: 100%;
+        }}
+
+        .titulo-prova {{
+            font-size: 14pt;
+            font-weight: bold;
+            margin: 0 0 1mm 33mm;
+            text-align: left;
+        }}
+
+        .campos-aluno {{
+            font-size: 14pt;
+            margin: 0 0 5mm 8mm;
+        }}
+
+        .campos-aluno p {{
+            margin-bottom: 1mm;
+        }}
+
+        /* ========== LAYOUT DE 2 COLUNAS ========== */
+        .content {{
+            column-count: 2;
+            column-gap: 5mm;
+            text-align: justify;
+            margin: 0 4mm 15mm 4mm;
+        }}
+
+        .question-box {{
+            break-inside: avoid;
+            page-break-inside: avoid;
+            margin-bottom: 2mm;
+            display: inline-block;
+            width: 100%;
+            min-height: 20px;  /* FIX: Previne altura 0 quando LaTeX quebra */
+        }}
+
+        .enunciado {{
+            font-family: 'Arial', Times, serif;
+            font-size: 14pt;
+            margin-bottom: 3mm;
+            text-align: justify;
+            line-height: 1.3;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            min-height: 15px;  /* FIX: Garante espaço mesmo se LaTeX quebrar */
+        }}
+
+        .question-img {{
+            max-width: 100%;
+            max-height: 70mm;
+            display: block;
+            margin: 3mm auto;
+            border: 1px solid #ddd;
+            padding: 1mm;
+        }}
+
+        /* Alternativas */
+        .alternativas {{
+            font-family: 'Arial', Times, serif;
+            font-size: 14pt;
+            margin-top: 1.5mm;
+            margin-bottom: 1.5mm;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6mm;
+        }} 
+
+        .alt-item {{
+            white-space: nowrap;
+            color: #000;
+            flex-shrink: 0;
+        }}
+
+        .alt-item-red {{
+            white-space: nowrap;
+            color: #cc0000;
+            font-weight: bold;
+            flex-shrink: 0;
+        }}
+
+        /* ========== RESOLUÇÕES ========== */
+        .resolucao-box {{
+            margin-top: 1mm;
+            margin-bottom: 5mm;
+        }}
+
+        .resolucao-label {{
+            font-family: 'Arial', Times, serif;
+            font-size: 14pt;
+            margin-bottom: 1mm;
+            color: #cc0000;
+            font-weight: bold;
+        }}
+
+        .resolucao-text {{
+            color: #cc0000;
+            font-size: 14pt;
+            line-height: 1.3;
+        }}
+
+        .titulo-resolucoes {{
+            display: none;
+        }}
+        
+        .page-break {{
+            page-break-after: always;
+            display: block;
+            height: 1px;
+        }}
+
+        /* ========== CLASSES PARA CONTROLE DE QUEBRA ========== */
+        .keep-together {{
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+        }}
+        
+        .force-break {{
+            page-break-before: always !important;
+            break-before: page !important;
+        }}
+
+    </style>
+</head>
+<body>
+    <table class="print-table">
+        
+        <thead>
+            <tr>
+                <td>
+                    <div class="header-space">
+                        {f'<img src="{header_img}" class="header-img" />' if header_img else ''}
+                    </div>
+                </td>
+            </tr>
+        </thead>
+
+        <tfoot>
+            <tr>
+                <td>
+                    <div class="footer-space">
+                        {f'<img src="{footer_img}" class="footer-img" />' if footer_img else ''}
+                    </div>
+                </td>
+            </tr>
+        </tfoot>
+
+        <tbody>
+            <tr>
+                <td>
+                    <div class="content-wrapper">
+                        
+                        <div class="titulo-prova">{titulo}</div>
+                        <div class="campos-aluno">
+                            <p><strong>ALUNO(A):</strong>___________________________________________________________________________</p>
+                            <p><strong>ESCOLA:</strong> _________________________________________ <strong>MUNICÍPIO:</strong> ________________________</p>
+                        </div>
+                        
+                        <div class="content">
+                            {questions_sem_resolucao}
+                        </div>
+
+                        <div class="page-break"></div>
+
+                        <div class="titulo-prova">{titulo}</div>
+                        <div class="campos-aluno">
+                            <p><strong>ALUNO(A):</strong>____________________________________________________________________________</p>
+                            <p><strong>ESCOLA:</strong> _________________________________________ <strong>MUNICÍPIO:</strong> ________________________</p>
+                        </div>
+                        
+                        <div class="content">
+                            {questions_com_resolucao}
+                        </div>
+
+                    </div>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</body>
+</html>
+"""
+        
+        # ========== GERAÇÃO DO PDF ==========
         buffer = io.BytesIO()
         
-        max_retries = 2
-        for attempt in range(max_retries):
+        for attempt in range(2):
             try:              
                 with sync_playwright() as p:
                     browser = p.chromium.launch(
+                        # Desempenho otimizado
                         args=[
                             "--no-sandbox",
                             "--disable-setuid-sandbox",
-                            "--disable-dev-shm-usage",  # Reduz uso de memória
-                            "--disable-gpu"
+                            "--disable-dev-shm-usage",
+                            "--disable-gpu",
+                            "--disable-background-networking",
+                            "--disable-extensions",
+                            "--disable-plugins",
+                            "--disable-images"
                         ]
                     )
                     
@@ -665,7 +807,7 @@ class AdvancedPDFGenerator:
                     # Carrega HTML
                     page.set_content(html_content, wait_until="domcontentloaded", timeout=60000)
                     
-                    # Aguarda MathJax (reduzido para 10 segundos)
+                    # Aguarda MathJax (config da versão que funcionava)
                     try:
                         page.wait_for_function(
                             "typeof MathJax !== 'undefined' && MathJax.startup && MathJax.startup.promise",
@@ -673,9 +815,10 @@ class AdvancedPDFGenerator:
                         )
                         page.evaluate("MathJax.typesetPromise()")
                     except Exception as e:
-                        print(f"⚠️ MathJax timeout (continuando): {e}")
+                        logger.exception("MathJax typeset failed")
                     
-                    # Gera PDF (SEM PARÂMETRO TIMEOUT)
+                    # GERA PDF - Config da versão que funcionava (fds.text)
+                    # prefer_css_page_size=True + margin 0 = @page CSS controla layout
                     pdf_bytes = page.pdf(
                         format="A4",
                         print_background=True,
@@ -683,29 +826,23 @@ class AdvancedPDFGenerator:
                         margin={"top": "0", "bottom": "0", "left": "0", "right": "0"}
                     )
                     
+                    # Remove blank pages
+                    pdf_bytes = AdvancedPDFGenerator._remove_blank_pages(pdf_bytes)
+                    
                     browser.close()
                     
-                    # Sucesso
                     buffer.write(pdf_bytes)
                     buffer.seek(0)
                     return buffer
                     
-            except PlaywrightTimeoutError as e:
-                print(f"⚠️ Timeout na tentativa {attempt + 1}: {e}")
-                if attempt < max_retries - 1:
-                    print(f"⚠️ Tentando novamente em 2 segundos...")
-                    time.sleep(2)
-                else:
-                    raise
             except Exception as e:
                 print(f"⚠️ Erro na tentativa {attempt + 1}: {e}")
-                if attempt < max_retries - 1:
-                    print(f"⚠️ Tentando novamente em 2 segundos...")
+                if attempt == 0:
                     time.sleep(2)
                 else:
                     raise
         
-        raise Exception("Não foi possível gerar o PDF após múltiplas tentativas")
+        raise Exception("Não foi possível gerar o PDF")
 
     @staticmethod
     def create_question_bank_pdf(questions: List[Any], options: Dict[str, Any] = None) -> io.BytesIO:

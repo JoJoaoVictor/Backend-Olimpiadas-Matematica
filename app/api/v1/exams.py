@@ -6,7 +6,7 @@ from io import BytesIO
 import types  # Usado para criar objetos mock dinâmicos
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -140,8 +140,6 @@ async def generate_pdf_from_payload(
             
             formatted_questions.append(q_obj)
 
-        print(f"DEBUG - Total questões formatadas: {len(formatted_questions)}")
-        
         # ========== CRIAÇÃO DO MOCK DA PROVA ==========
         mock_exam = {
             'name': name,
@@ -184,11 +182,12 @@ async def generate_pdf_from_payload(
         )
 
         # ========== PREPARAÇÃO DA RESPOSTA ==========
+        # CRÍTICO: Usar Response com getvalue() - StreamingResponse(BytesIO) envia corpo vazio
         safe_name = "".join([c if c.isalnum() else "_" for c in name])
         filename = f"prova_{safe_name}.pdf"
 
-        return StreamingResponse(
-            pdf_buffer,
+        return Response(
+            content=pdf_buffer.getvalue(),
             media_type="application/pdf",
             headers={
                 "Content-Disposition": f"attachment; filename={filename}",
@@ -370,12 +369,12 @@ async def generate_exam_pdf(
         )
 
         # Sanitiza nome do arquivo
+        # CRÍTICO: Usar Response com getvalue() - StreamingResponse(BytesIO) envia corpo vazio
         safe_name = "".join([c if c.isalnum() else "_" for c in exam.name])
         filename = f"prova_{safe_name}.pdf"
 
-        # Retorna o PDF como resposta
-        return StreamingResponse(
-            pdf_buffer,
+        return Response(
+            content=pdf_buffer.getvalue(),
             media_type="application/pdf",
             headers={
                 "Content-Disposition": f"attachment; filename={filename}",

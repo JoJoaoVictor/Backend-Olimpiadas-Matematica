@@ -10,7 +10,6 @@ ARQUITETURA:
 
 import io
 import asyncio
-import time
 from typing import List, Optional, Any, Dict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -253,12 +252,6 @@ class PDFService:
                 f.write(buffer.getvalue())
         
         await loop.run_in_executor(None, _write)
-
-
-# Aguarda 2 segundos na primeira execução para evitar problemas de inicialização
-if not hasattr(PDFService, '_first_run_done'):
-    time.sleep(2)
-    PDFService._first_run_done = True
 
 
 # ========== FUNÇÕES AUXILIARES PARA RETROCOMPATIBILIDADE ==========
