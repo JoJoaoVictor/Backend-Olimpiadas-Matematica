@@ -151,7 +151,7 @@ async def approve_question(
     db: Session = Depends(get_db)
 ):
     """Aprova questão (apenas revisores e professores)."""
-    try:
+    try:    
         question = QuestionService.approve_question(db, question_id, current_user)
         
         return {

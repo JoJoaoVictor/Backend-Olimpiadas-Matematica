@@ -20,7 +20,6 @@ class Image(BaseModel):
      
     # URLs (para CDN ou storage externo)
     url = Column(String(500), nullable=True)
-    thumbnail_url = Column(String(500), nullable=True)
     
     # Relacionamentos
     questions = relationship("Question", back_populates="image")
