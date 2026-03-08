@@ -8,8 +8,8 @@ from app.schemas.question import QuestionResponse
 
 class ExamBase(BaseModel):
     """Schema base para prova."""
-    name: str = Field(..., min_length=5, max_length=200)
-    fase: str = Field(..., min_length=2, max_length=50)
+    name: str = Field(..., min_length=1, max_length=200)
+    fase: str = Field(..., min_length=1, max_length=50)
     anos: List[str] = Field(..., min_items=1)
     status: ExamStatus = ExamStatus.PENDENTE
     description: Optional[str] = Field(None, max_length=1000)

@@ -17,8 +17,6 @@ class ImageResponse(ImageBase, TimestampedSchema):
     """Schema para resposta de imagem."""
     file_path: str
     url: Optional[str] = None
-    thumbnail_url: Optional[str] = None
-
  
 class ImageUpload(BaseModel):
     """Schema para upload de imagem."""

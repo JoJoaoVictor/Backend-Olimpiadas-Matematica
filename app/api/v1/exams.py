@@ -1,12 +1,10 @@
 """Rotas de provas."""
-from app.models.question import Question  # Adicione esta linha
 import logging
 from typing import List, Optional
 from io import BytesIO
-import types  # Usado para criar objetos mock dinâmicos
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -26,40 +24,29 @@ from app.services.pdf_service import PDFService
 from app.core.exceptions import AppException
 from app.core.config import settings
 
-# Configuração do logger
 logger = logging.getLogger(__name__)
-
 router = APIRouter()
 
 
 @router.get("", response_model=dict)
 async def list_exams(
-    page: int = Query(1, ge=1, description="Página"),
-    per_page: int = Query(20, ge=1, le=100, description="Itens por página"),
-    search: Optional[str] = Query(None, description="Busca textual"),
-    status: Optional[ExamStatus] = Query(None, description="Filtro por status"),
-    fase: Optional[str] = Query(None, description="Filtro por fase"),
-    anos: Optional[List[str]] = Query(None, description="Filtro por anos"),
-    author_id: Optional[int] = Query(None, description="Filtro por autor"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    status: Optional[ExamStatus] = Query(None),
+    fase: Optional[str] = Query(None),
+    anos: Optional[List[str]] = Query(None),
+    author_id: Optional[int] = Query(None),
     current_user: User = Depends(get_professor_user),
     db: Session = Depends(get_db)
 ):
-    """Lista provas com filtros."""
     try:
         filters = ExamFilters(
-            page=page,
-            per_page=per_page,
-            search=search,
-            status=status,
-            fase=fase,
-            anos=anos,
-            author_id=author_id
+            page=page, per_page=per_page, search=search,
+            status=status, fase=fase, anos=anos, author_id=author_id
         )
-
         result = ExamService.get_exams(db, filters, current_user)
-
         return {"success": True, "data": result}
-
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -70,77 +57,92 @@ async def create_exam(
     current_user: User = Depends(get_professor_user),
     db: Session = Depends(get_db)
 ):
-    """Cria uma nova prova."""
     try:
+        logger.info(f"Recebido payload para criar prova: {exam_data.dict()}")
         exam = ExamService.create_exam(db, exam_data, current_user)
-
         return {
             "success": True,
             "message": "Prova criada com sucesso",
             "data": {"exam": ExamResponse.from_orm(exam)}
         }
-
     except AppException as e:
+        logger.info(f"Erro ao criar prova: {e.detail}")
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
-# ------------------------------------------------------------------------------
-# ROTA DE GERAÇÃO DE PDF A PARTIR DE PAYLOAD (FRONTEND)
-# ------------------------------------------------------------------------------
 @router.post("/generate_pdf")
 async def generate_pdf_from_payload(
     payload: dict,
     db: Session = Depends(get_db)
 ):
-    """
-    Gera PDF a partir de um payload JSON enviado pelo frontend.
-    """
+    """Gera PDF a partir de payload JSON enviado pelo frontend."""
     try:
-        # ========== EXTRAÇÃO DOS DADOS DO PAYLOAD ==========
+        # Extrai dados básicos
         name = payload.get("name", "Prova Sem Título")
         fase = payload.get("fase", "")
         anos_str = payload.get("anos", "")
         raw_questions = payload.get("questoes", [])
 
-        # ========== CORREÇÃO: USAR APENAS DADOS DO PAYLOAD ==========
+        logger.info(f"📦 Gerando PDF para prova '{name}' com {len(raw_questions)} questões")
+
         formatted_questions = []
-        
         for q in raw_questions:
             q_obj = {}
-            
-            # Atributos básicos do payload
+
             q_obj['id'] = q.get("id")
             q_obj['name'] = q.get("name", "")
+
+            # Enunciado
             q_obj['question_statement'] = q.get("question_statement") or q.get("questionStatement") or ""
             q_obj['questionStatement'] = q_obj['question_statement']
-            
-            # Alternativas - converte string JSON para dict se necessário
-            alternatives = q.get("alternatives", {})
-            if isinstance(alternatives, str):
-                try:
-                    import json
-                    alternatives = json.loads(alternatives)
-                except:
-                    alternatives = {}
-            q_obj['alternatives'] = alternatives
-            
+
+            # Alternativas (já vêm no formato "a) texto\nb) texto...")
+            q_obj['alternatives'] = q.get("alternatives", "")
+
             # Alternativa correta
             q_obj['correctAlternative'] = q.get("correct_alternative") or q.get("correctAlternative") or ""
             q_obj['correct_alternative'] = q_obj['correctAlternative']
-            
-            # ========== CORREÇÃO CRÍTICA: USAR RESOLUÇÃO DO PAYLOAD ==========
-            # O payload já tem a resolução! Não buscar no banco.
-            # Usa detailedResolution (camelCase) do payload, que é o nome correto
-            detailed_resolution = q.get("detailedResolution", "")
-            q_obj['detailedResolution'] = detailed_resolution
-            q_obj['detailed_resolution'] = detailed_resolution  # Alias para compatibilidade
-            
-            # Imagem
-            q_obj['image'] = q.get("image")
-            
+
+            # Resolução
+            q_obj['detailedResolution'] = q.get("detailedResolution", "") or q.get("detailed_resolution", "")
+            q_obj['detailed_resolution'] = q_obj['detailedResolution']
+
+           # Imagem: prioridade para o campo 'image'
+            image_field = q.get("image")
+            if image_field:
+                if isinstance(image_field, dict) and "url" in image_field:
+                    q_obj['image'] = image_field['url']
+                    q_obj['image_role'] = image_field.get('role')
+                    print(f"Questão ID {q.get('id')}: image_role = {q_obj.get('image_role')}")
+                elif isinstance(image_field, str):
+                    q_obj['image'] = image_field
+                    # Não define image_role aqui (será pego depois)
+                else:
+                    q_obj['image'] = None
+            else:
+                # Fallback para array 'images' (legado)
+                images_array = q.get("images", [])
+                if images_array and isinstance(images_array, list) and len(images_array) > 0:
+                    first = images_array[0]
+                    if isinstance(first, dict) and 'src' in first:
+                        q_obj['image'] = first['src']
+                        q_obj['image_role'] = first.get('role')
+                    elif isinstance(first, str):
+                        q_obj['image'] = first
+                else:
+                    q_obj['image'] = None
+
+            #captura o image_role do objeto original, se não foi definido acima
+            if 'image_role' not in q_obj or q_obj['image_role'] is None:
+                q_obj['image_role'] = q.get("image_role")
+
+            # (opcional) converter URL relativa para absoluta
+            if q_obj.get('image') and isinstance(q_obj['image'], str) and q_obj['image'].startswith('/uploads/'):
+                q_obj['image'] = 'http://localhost:8000' + q_obj['image']
+
             formatted_questions.append(q_obj)
 
-        # ========== CRIAÇÃO DO MOCK DA PROVA ==========
+        # Cria mock do exame
         mock_exam = {
             'name': name,
             'fase': fase,
@@ -150,12 +152,8 @@ async def generate_pdf_from_payload(
             'ano': payload.get("ano", 2024)
         }
 
-        # ========== CONFIGURAÇÃO DO PDF REQUEST ==========
-        inst_name = getattr(
-            settings,
-            "DEFAULT_INSTITUTION_NAME",
-            "Olimpíadas de Matemática"
-        )
+        # Configuração do PDF request
+        inst_name = getattr(settings, "DEFAULT_INSTITUTION_NAME", "Olimpíadas de Matemática")
         logo_path = getattr(settings, "DEFAULT_LOGO_PATH", None)
 
         pdf_request = ExamPDFRequest(
@@ -174,7 +172,7 @@ async def generate_pdf_from_payload(
             }
         )
 
-        # ========== GERAÇÃO DO PDF ==========
+                # ========== GERAÇÃO DO PDF ==========
         pdf_buffer = await PDFService.generate_exam_pdf(
             mock_exam,
             formatted_questions,
@@ -182,7 +180,6 @@ async def generate_pdf_from_payload(
         )
 
         # ========== PREPARAÇÃO DA RESPOSTA ==========
-        # CRÍTICO: Usar Response com getvalue() - StreamingResponse(BytesIO) envia corpo vazio
         safe_name = "".join([c if c.isalnum() else "_" for c in name])
         filename = f"prova_{safe_name}.pdf"
 
@@ -194,33 +191,25 @@ async def generate_pdf_from_payload(
                 "Cache-Control": "no-cache"
             }
         )
-
+    
     except Exception as e:
-        # Log do erro completo para debug
-        logger.error(
-            f"Erro ao gerar PDF via payload: {str(e)}",
-            exc_info=True
-        )
-        # Retorna erro 500 com mensagem descritiva
+        logger.error(f"Erro ao gerar PDF via payload: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno ao gerar PDF: {str(e)}"
         )
+
+
 @router.get("/{exam_id}", response_model=dict)
 async def get_exam(
     exam_id: int,
     current_user: User = Depends(get_professor_user),
     db: Session = Depends(get_db)
 ):
-    """Busca prova por ID."""
     try:
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
-
-        return {
-            "success": True,
-            "data": {"exam": ExamResponse.from_orm(exam)}
-        }
-
+        logger.info(f"Exam {exam_id} has {len(exam.exam_questions)} questions")
+        return {"success": True, "data": {"exam": ExamResponse.from_orm(exam)}}
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -232,16 +221,13 @@ async def update_exam(
     current_user: User = Depends(get_professor_user),
     db: Session = Depends(get_db)
 ):
-    """Atualiza prova."""
     try:
         exam = ExamService.update_exam(db, exam_id, exam_data, current_user)
-
         return {
             "success": True,
             "message": "Prova atualizada com sucesso",
             "data": {"exam": ExamResponse.from_orm(exam)}
         }
-
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -253,21 +239,13 @@ async def update_exam_questions(
     current_user: User = Depends(get_professor_user),
     db: Session = Depends(get_db)
 ):
-    """Atualiza questões da prova."""
     try:
-        exam = ExamService.update_exam_questions(
-            db,
-            exam_id,
-            questions_data,
-            current_user
-        )
-
+        exam = ExamService.update_exam_questions(db, exam_id, questions_data, current_user)
         return {
             "success": True,
             "message": "Questões da prova atualizadas com sucesso",
             "data": {"exam": ExamResponse.from_orm(exam)}
         }
-
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -278,12 +256,9 @@ async def delete_exam(
     current_user: User = Depends(get_professor_user),
     db: Session = Depends(get_db)
 ):
-    """Remove prova."""
     try:
         ExamService.delete_exam(db, exam_id, current_user)
-
         return {"success": True, "message": "Prova removida com sucesso"}
-
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -295,21 +270,13 @@ async def change_exam_status(
     current_user: User = Depends(get_professor_user),
     db: Session = Depends(get_db)
 ):
-    """Altera status da prova."""
     try:
-        exam = ExamService.change_exam_status(
-            db,
-            exam_id,
-            new_status,
-            current_user
-        )
-
+        exam = ExamService.change_exam_status(db, exam_id, new_status, current_user)
         return {
             "success": True,
             "message": f"Status alterado para {new_status.value}",
             "data": {"exam": ExamResponse.from_orm(exam)}
         }
-
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -322,29 +289,17 @@ async def generate_exam_pdf(
     current_user: User = Depends(get_professor_user),
     db: Session = Depends(get_db)
 ):
-    """Gera PDF da prova salva no banco de dados."""
     try:
-        # Busca a prova no banco
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        # Ordena as questões pelo order_index
         questions = [
             eq.question
-            for eq in sorted(
-                exam.exam_questions,
-                key=lambda x: x.order_index
-            )
+            for eq in sorted(exam.exam_questions, key=lambda x: x.order_index)
         ]
 
-        # Busca configurações institucionais
         logo_path = getattr(settings, "DEFAULT_LOGO_PATH", None)
-        inst_name = institution_name or getattr(
-            settings,
-            "DEFAULT_INSTITUTION_NAME",
-            "Olimpíadas de Matemática"
-        )
+        inst_name = institution_name or getattr(settings, "DEFAULT_INSTITUTION_NAME", "Olimpíadas de Matemática")
 
-        # Cria o schema ExamPDFRequest
         pdf_request = ExamPDFRequest(
             exam_id=exam_id,
             questions=[],
@@ -361,15 +316,8 @@ async def generate_exam_pdf(
             }
         )
 
-        # Gera o PDF chamando o serviço
-        pdf_buffer = await PDFService.generate_exam_pdf(
-            exam,
-            questions,
-            pdf_request
-        )
+        pdf_buffer = await PDFService.generate_exam_pdf(exam, questions, pdf_request)
 
-        # Sanitiza nome do arquivo
-        # CRÍTICO: Usar Response com getvalue() - StreamingResponse(BytesIO) envia corpo vazio
         safe_name = "".join([c if c.isalnum() else "_" for c in exam.name])
         filename = f"prova_{safe_name}.pdf"
 
@@ -385,10 +333,7 @@ async def generate_exam_pdf(
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     except Exception as e:
-        logger.error(
-            f"Erro ao gerar PDF da prova {exam_id}: {str(e)}",
-            exc_info=True
-        )
+        logger.error(f"Erro ao gerar PDF da prova {exam_id}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Erro interno na geração do PDF."
@@ -400,16 +345,11 @@ async def get_exam_stats(
     current_user: User = Depends(get_professor_user),
     db: Session = Depends(get_db)
 ):
-    """Estatísticas gerais das provas."""
     try:
         stats = ExamService.get_exam_stats(db, current_user)
         return {"success": True, "data": {"stats": stats}}
-
     except Exception as e:
-        logger.error(
-            f"Erro ao buscar estatísticas: {str(e)}",
-            exc_info=True
-        )
+        logger.error(f"Erro ao buscar estatísticas: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Erro ao obter estatísticas"

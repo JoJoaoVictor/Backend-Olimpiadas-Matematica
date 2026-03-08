@@ -38,7 +38,6 @@ class ImageProcessor:
     
     # Configurações padrão
     MAX_DIMENSION = 2048
-    THUMBNAIL_SIZE = (300, 300)
     QUALITY_STANDARD = 85
     QUALITY_THUMBNAIL = 80
      
@@ -149,96 +148,6 @@ class ImageProcessor:
             
         except Exception as e:
             raise ValidationException(f"Erro na otimização: {str(e)}")
-    
-    
-    # ═════════════════════════════════════════════════════════
-    # CRIAÇÃO DE THUMBNAILS
-    # ═════════════════════════════════════════════════════════
-    
-    @staticmethod
-    def create_thumbnail_variants(
-        image_path: str, 
-        sizes: List[Tuple[int, int]] = None
-    ) -> Dict[str, str]:
-        """
-        Cria múltiplas versões de thumbnail.
-        
-        TAMANHOS PADRÃO:
-        - 150x150: Ícone pequeno
-        - 300x300: Preview médio
-        - 600x600: Preview grande
-        
-        CARACTERÍSTICAS:
-        - Mantém proporção
-        - Corrige orientação EXIF
-        - Otimiza qualidade
-        
-        Args:
-            image_path: Caminho da imagem original
-            sizes: Lista de tuplas (width, height)
-            
-        Returns:
-            Dict com {tamanho: caminho}
-            
-        Exemplo:
-            >>> thumbs = ImageProcessor.create_thumbnail_variants(
-            ...     "questao.jpg",
-            ...     sizes=[(150, 150), (300, 300)]
-            ... )
-            >>> thumbs
-            {
-                '150x150': 'path/to/thumb_150x150.jpg',
-                '300x300': 'path/to/thumb_300x300.jpg'
-            }
-        """
-        if sizes is None:
-            sizes = [(150, 150), (300, 300), (600, 600)]
-        
-        thumbnails = {}
-        
-        try:
-            with Image.open(image_path) as img:
-                # Corrige orientação EXIF (fotos de celular)
-                img = ImageOps.exif_transpose(img)
-                
-                base_path = Path(image_path)
-                thumb_dir = base_path.parent / "thumbnails"
-                thumb_dir.mkdir(exist_ok=True)
-                
-                for size in sizes:
-                    # Cria cópia para thumbnail
-                    thumb = img.copy()
-                    
-                    # Redimensiona mantendo proporção
-                    thumb.thumbnail(size, Image.Resampling.LANCZOS)
-                    
-                    # Nome do arquivo
-                    thumb_name = (
-                        f"{base_path.stem}_thumb_{size[0]}x{size[1]}"
-                        f"{base_path.suffix}"
-                    )
-                    thumb_path = thumb_dir / thumb_name
-                    
-                    # Configurações de salvamento
-                    save_kwargs = {
-                        'quality': ImageProcessor.QUALITY_THUMBNAIL,
-                        'optimize': True
-                    }
-                    
-                    # Salva no formato adequado
-                    if base_path.suffix.lower() in ['.jpg', '.jpeg']:
-                        thumb = thumb.convert('RGB')
-                        thumb.save(thumb_path, 'JPEG', **save_kwargs)
-                    else:
-                        thumb.save(thumb_path, **save_kwargs)
-                    
-                    thumbnails[f"{size[0]}x{size[1]}"] = str(thumb_path)
-            
-            return thumbnails
-            
-        except Exception as e:
-            raise ValidationException(f"Erro ao criar thumbnails: {str(e)}")
-    
     
     # ═════════════════════════════════════════════════════════
     # DETECÇÃO DE TEXTO E SÍMBOLOS

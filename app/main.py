@@ -19,6 +19,8 @@ if sys.platform.startswith("win"):
 # IMPORTAÇÕES GERAIS
 # --------------------------------------------------------------------------------
 
+# Biblioteca para gerenciamento do ciclo de vida do Playwright (singleton)
+from app.utils.playwright_manager import PlaywrightManager
 # Utilizado para controlar o ciclo de vida da aplicação (startup e shutdown)
 from contextlib import asynccontextmanager
 
@@ -146,6 +148,15 @@ app.add_middleware(
 # 5. ARQUIVOS ESTÁTICOS
 # --------------------------------------------------------------------------------
 
+# Garante que o diretório de uploads existe
+os.makedirs("uploads/images", exist_ok=True)
+
+# Serve arquivos estáticos (se houver)
+# app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Serve arquivos de upload
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
 # Configuração para servir arquivos estáticos (atualmente desativada/comentada)
 # os.makedirs("static/images", exist_ok=True) 
 # app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -249,3 +260,21 @@ if __name__ == "__main__":
     # reload=True habilita reinício automático ao alterar código
     # Ao rodar por aqui, garantimos que o loop configurado acima seja o utilizado
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+
+# --------------------------------------------------------------------------------
+# 11. CICLO DE VIDA DO PLAYWRIGHT (INICIALIZAÇÃO E ENC
+# --------------------------------------------------------------------------------
+
+# O Playwright é inicializado no startup da aplicação e encerrado no shutdown para garantir que o navegador seja gerenciado corretamente.
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Startup
+        logger.info("🚀 Iniciando aplicação")
+        if settings.is_development:
+            Base.metadata.create_all(bind=engine)
+        # Aquece o Playwright
+        PlaywrightManager.get_browser()
+        yield
+        # Shutdown
+        PlaywrightManager.close()
+        logger.info("👋 Encerrando aplicação")

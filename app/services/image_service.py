@@ -19,7 +19,6 @@ class ImageService:
     ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.svg'}
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
     MAX_DIMENSION = 2048
-    THUMBNAIL_SIZE = (300, 300)
     
     @staticmethod
     def upload_image(
@@ -51,9 +50,6 @@ class ImageService:
             # Processa imagem
             processed_info = ImageService._process_image(file_path)
             
-            # Cria thumbnail
-            thumbnail_path = ImageService._create_thumbnail(file_path)
-            
             # Salva no banco
             image_model = ImageModel(
                 filename=unique_filename,
@@ -64,7 +60,6 @@ class ImageService:
                 width=processed_info['width'],
                 height=processed_info['height'],
                 url=f"/uploads/images/{unique_filename}",
-                thumbnail_url=f"/uploads/images/thumbnails/{thumbnail_path.name}" if thumbnail_path else None
             )
             
             db.add(image_model)
@@ -140,34 +135,7 @@ class ImageService:
             raise ValidationException(f"Erro no processamento da imagem: {str(e)}")
     
     @staticmethod
-    def _create_thumbnail(file_path: Path) -> Optional[Path]:
-        """Cria thumbnail da imagem."""
-        try:
-            # Diretório de thumbnails
-            thumb_dir = file_path.parent / "thumbnails"
-            thumb_dir.mkdir(exist_ok=True)
-            
-            thumb_path = thumb_dir / f"thumb_{file_path.name}"
-            
-            with Image.open(file_path) as img:
-                # Corrige orientação
-                img = ImageOps.exif_transpose(img)
-                
-                # Cria thumbnail mantendo proporção
-                img.thumbnail(ImageService.THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-                
-                # Salva thumbnail
-                if file_path.suffix.lower() in ['.jpg', '.jpeg']:
-                    img = img.convert('RGB')
-                    img.save(thumb_path, 'JPEG', quality=80, optimize=True)
-                elif file_path.suffix.lower() == '.png':
-                    img.save(thumb_path, 'PNG', optimize=True)
-                
-                return thumb_path
-                
-        except Exception:
-            return None  # Falha na criação do thumbnail não é crítica
-    
+   
     @staticmethod
     def delete_image(db, image_id: int, current_user: User) -> bool:
         """Remove imagem e arquivos."""
@@ -180,12 +148,6 @@ class ImageService:
             file_path = Path(settings.UPLOAD_PATH) / image.file_path
             if file_path.exists():
                 file_path.unlink()
-            
-            # Remove thumbnail
-            if image.thumbnail_url:
-                thumb_path = Path(settings.UPLOAD_PATH) / image.thumbnail_url.lstrip("/uploads/")
-                if thumb_path.exists():
-                    thumb_path.unlink()
             
             # Remove do banco
             db.delete(image)

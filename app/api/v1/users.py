@@ -2,7 +2,7 @@
 Rotas de usuários (Endpoints).
 Arquivo: app/api/v1/users.py
 """
-
+from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -300,17 +300,40 @@ async def delete_user(
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
-    """Soft Delete (desativa usuário)."""
+    """
+    Hard Delete: Remove o registro do banco de dados definitivamente.
+    """
+    # 1. Busca o usuário
     user = db.query(User).filter(User.id == user_id).first()
+    
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
     
-    # Soft delete
-    user.is_active = False
-    db.commit()
-    
-    return {
-        "success": True,
-        "message": "Usuário desativado com sucesso",
-        "data": {"user": UserResponse.from_orm(user)}
-    }
+    # 2. Tenta remover fisicamente
+    try:
+        db.delete(user)
+        db.commit()
+        
+        return {
+            "success": True,
+            "message": "Usuário removido permanentemente do sistema."
+        }
+
+    except IntegrityError:
+        # 3. Captura erro se o usuário tiver vínculos (ex: criou provas/questões)
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Não é possível apagar este usuário pois ele possui registros vinculados "
+                "(questões, exames, etc). Remova os vínculos antes de apagar."
+            )
+        )
+        
+    except Exception as e:
+        # 4. Captura outros erros genéricos
+        db.rollback()
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Erro ao tentar remover usuário: {str(e)}"
+        )

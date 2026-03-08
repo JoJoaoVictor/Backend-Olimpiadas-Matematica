@@ -4,6 +4,8 @@ import logging
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_, func
+from sqlalchemy.orm import selectinload
+from app.schemas.exam import ExamResponse
 
 from app.models.exam import Exam, ExamStatus
 from app.models.question import Question
@@ -76,7 +78,10 @@ class ExamService:
         current_user: User
     ) -> Dict[str, Any]:
         """Lista provas com filtros."""
-        query = db.query(Exam)
+        query = db.query(Exam).options(
+            selectinload(Exam.author),
+            selectinload(Exam.exam_questions).selectinload(ExamQuestion.question)
+        )
         
         # Permissões de visualização
         if current_user.role == UserRole.PROFESSOR:
@@ -101,12 +106,8 @@ class ExamService:
         
         # Filtro de array (Anos)
         if filters.anos:
-            # PostgreSQL array overlap ou contains
-            # Assumindo que 'anos' no DB é JSON ou Array
             for ano in filters.anos:
-                # Ajuste conforme seu dialeto SQL (ex: JSON_CONTAINS ou operador @>)
-                # Aqui uso uma abordagem genérica que funciona se a coluna for JSON/Array
-                query = query.filter(Exam.anos.contains(ano)) 
+                query = query.filter(Exam.anos.contains(ano))
         
         if filters.author_id and current_user.role == UserRole.ADMIN:
             query = query.filter(Exam.author_id == filters.author_id)
@@ -116,10 +117,13 @@ class ExamService:
         query = query.order_by(desc(Exam.created_at))
         exams = query.offset((filters.page - 1) * filters.per_page).limit(filters.per_page).all()
         
+        # Converte para schemas
+        exam_schemas = [ExamResponse.from_orm(exam) for exam in exams]
+        
         pages = (total + filters.per_page - 1) // filters.per_page
         
         return {
-            "exams": exams,
+            "exams": exam_schemas,
             "total": total,
             "page": filters.page,
             "per_page": filters.per_page,
@@ -128,8 +132,10 @@ class ExamService:
     
     @staticmethod
     def get_exam_by_id(db: Session, exam_id: int, current_user: User) -> Exam:
-        """Busca prova por ID com verificação de segurança."""
-        exam = db.query(Exam).filter(Exam.id == exam_id).first()
+        exam = db.query(Exam).options(
+            selectinload(Exam.author),
+            selectinload(Exam.exam_questions).selectinload(ExamQuestion.question)
+        ).filter(Exam.id == exam_id).first()
         if not exam:
             raise NotFoundException("Prova não encontrada")
         

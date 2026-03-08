@@ -46,6 +46,8 @@ class Question(BaseModel):
     grau_id = Column(Integer, ForeignKey("graus.id"), nullable=False)
     author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     image_id = Column(Integer, ForeignKey("images.id"), nullable=True)
+    image_role = Column(String(10), nullable=True) 
+    reviewer_comments = Column(Text, nullable=True)
     
     # Relacionamentos (Objetos)
     category = relationship("Category", back_populates="questions")
