@@ -9,7 +9,7 @@ FUNCIONALIDADES:
 4. Duas versões: SEM e COM resoluções
 5. Cabeçalho/Rodapé institucional UNEMAT
 """
-
+from app.core.config import settings
 import io
 import json
 import base64
@@ -118,31 +118,47 @@ class AdvancedPDFGenerator:
     def _get_image_source_for_question(q: Any) -> Optional[str]:
         """
         Extrai a fonte da imagem com prioridade:
-        1. Campo 'image' (singular) - formato atual (base64)
-        2. Campo 'images' (array) - formato legado
+        1. Campo 'image' (string, dict com 'url' ou objeto SQLAlchemy com 'url')
+        2. Campo 'images' (array legado)
+        Converte caminhos relativos para absolutos.
         """
-        # 1. Campo 'image' (prioridade máxima)
-        image_field = AdvancedPDFGenerator._get_field(q, "image")
-        if image_field:
-            if isinstance(image_field, str):
-                return image_field
-            if isinstance(image_field, dict) and 'src' in image_field:
-                return image_field['src']
+        base_url = getattr(settings, 'API_BASE_URL', 'http://localhost:8000')
+        if base_url.endswith('/'):
+            base_url = base_url[:-1]
 
-        # 2. Campo 'images' (array) - fallback
-        images_field = AdvancedPDFGenerator._get_field(q, "images")
-        if images_field:
-            if isinstance(images_field, list) and len(images_field) > 0:
-                first = images_field[0]
-                if isinstance(first, dict) and 'src' in first:
-                    return first['src']
-                if isinstance(first, str):
-                    return first
-            elif isinstance(images_field, dict):
-                src = images_field.get('src')
-                if src:
-                    return src
-        return None
+        src = None
+
+        # 1. Tenta obter do campo 'image'
+        image_field = AdvancedPDFGenerator._get_field(q, "image")
+        if image_field is not None:
+            # Objeto SQLAlchemy (relação) com atributo 'url'
+            if hasattr(image_field, 'url') and image_field.url:
+                src = image_field.url
+            # Dicionário com chave 'url'
+            elif isinstance(image_field, dict) and 'url' in image_field:
+                src = image_field['url']
+            # String direta
+            elif isinstance(image_field, str):
+                src = image_field
+
+        # 2. Se não encontrou, tenta campo 'images' (legado)
+        if src is None:
+            images_field = AdvancedPDFGenerator._get_field(q, "images")
+            if images_field:
+                if isinstance(images_field, list) and len(images_field) > 0:
+                    first = images_field[0]
+                    if isinstance(first, dict) and 'src' in first:
+                        src = first['src']
+                    elif isinstance(first, str):
+                        src = first
+                elif isinstance(images_field, dict):
+                    src = images_field.get('src')
+
+        # 3. Converte caminho relativo para absoluto, se necessário
+        if src and isinstance(src, str) and src.startswith('/uploads/'):
+            src = base_url + src
+
+        return src
 
     @staticmethod
     def _get_image_class_for_question(q: Any) -> str:
@@ -161,7 +177,6 @@ class AdvancedPDFGenerator:
                 return 'question-img-small'
             elif role == 'LARGE':
                 return 'question-img-large'
-            # MEDIUM é o default, então retorna medium mesmo se for MEDIUM ou outro
             return 'question-img-medium'
 
         # 2. Fallback: tenta obter do campo 'images' (array)
@@ -191,10 +206,8 @@ class AdvancedPDFGenerator:
             if role == 'LARGE':
                 return 'question-img-large'
 
-        # Default para MEDIUM
         return 'question-img-medium'
-    
-    # A função _get_image_style_attributes pode ser usada para aplicar estilos inline baseados em metadados de dimensão, se disponíveis.
+
     @staticmethod
     def _get_image_style_attributes(q: Any) -> str:
         """Gera atributos de estilo com base nas dimensões salvas."""
@@ -340,8 +353,14 @@ class AdvancedPDFGenerator:
                 alts_items = []
                 correct_letter = ""
                 if include_resolution:
-                    correct_alt = AdvancedPDFGenerator._get_field(q, "correctAlternative", "")
+                    # Tenta obter a alternativa correta de vários campos possíveis
+                    correct_alt = (
+                        AdvancedPDFGenerator._get_field(q, "correctAlternative") or
+                        AdvancedPDFGenerator._get_field(q, "correct_alternative") or
+                        ""
+                    )
                     correct_letter = AdvancedPDFGenerator._extract_correct_letter(correct_alt)
+                    logger.debug(f"Questão {i}: correct_alt={correct_alt}, correct_letter={correct_letter}")
                 for key in sorted(alts_dict.keys()):
                     val = alts_dict[key]
                     if val:
@@ -384,13 +403,13 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def create_exam_pdf(
-    exam: Any,
-    questions: List[Any],
-    options: Dict[str, Any] = None
-) -> io.BytesIO:
+        exam: Any,
+        questions: List[Any],
+        options: Dict[str, Any] = None
+    ) -> io.BytesIO:
         """Gera PDF da prova com Playwright (navegador reutilizado)."""
         import time
-        from app.utils.playwright_manager import PlaywrightManager  # import aqui ou no topo
+        from app.utils.playwright_manager import PlaywrightManager
 
         options = options or {}
         fase = AdvancedPDFGenerator._get_field(exam, 'fase', '1ª FASE')
@@ -485,7 +504,6 @@ class AdvancedPDFGenerator:
 
         buffer = io.BytesIO()
     
-        # Obtém o navegador compartilhado (já inicializado no lifespan)
         browser = PlaywrightManager.get_browser()
         page = None
 
@@ -493,7 +511,6 @@ class AdvancedPDFGenerator:
             page = browser.new_page()
             page.set_content(html_content, wait_until="domcontentloaded", timeout=60000)
 
-            # Espera inteligente pelo MathJax (substitui o timeout fixo)
             try:
                 page.wait_for_function(
                     "MathJax.typesetPromise ? MathJax.typesetPromise().then(() => true) : true",
@@ -502,7 +519,6 @@ class AdvancedPDFGenerator:
             except Exception:
                 logger.warning("MathJax não respondeu, continuando...")
 
-            # Gera o PDF
             pdf_bytes = page.pdf(
                 format="A4",
                 print_background=True,
@@ -518,22 +534,24 @@ class AdvancedPDFGenerator:
 
         except Exception as e:
             logger.error(f"❌ Erro na geração do PDF: {e}")
-            # Se quiser uma única tentativa, basta não repetir
             raise
         finally:
             if page:
-                page.close()  # ← ESSENCIAL: fecha a página, mas não o navegador
+                page.close()
 
-        @staticmethod
-        def create_question_bank_pdf(questions: List[Any], options: Dict[str, Any] = None) -> io.BytesIO:
-            """Gera PDF do banco de questões."""
-            fake_exam = {"fase": "Banco de Questões", "anos": ["Todos"], "ano": 2024}
-            return AdvancedPDFGenerator.create_exam_pdf(fake_exam, questions, options)
+    # =====================================================================
+    # Métodos auxiliares (nível da classe)
+    # =====================================================================
+    @staticmethod
+    def create_question_bank_pdf(questions: List[Any], options: Dict[str, Any] = None) -> io.BytesIO:
+        """Gera PDF do banco de questões."""
+        fake_exam = {"fase": "Banco de Questões", "anos": ["Todos"], "ano": 2024}
+        return AdvancedPDFGenerator.create_exam_pdf(fake_exam, questions, options)
 
-        @staticmethod
-        def create_statistical_report(data: Dict[str, Any], options: Dict[str, Any] = None) -> io.BytesIO:
-            """Stub para relatórios estatísticos."""
-            buffer = io.BytesIO()
-            buffer.write(b"%PDF-1.4 (Report in development)")
-            buffer.seek(0)
-            return buffer
+    @staticmethod
+    def create_statistical_report(data: Dict[str, Any], options: Dict[str, Any] = None) -> io.BytesIO:
+        """Stub para relatórios estatísticos."""
+        buffer = io.BytesIO()
+        buffer.write(b"%PDF-1.4 (Report in development)")
+        buffer.seek(0)
+        return buffer
