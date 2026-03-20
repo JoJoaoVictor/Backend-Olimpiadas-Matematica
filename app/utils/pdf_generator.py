@@ -7,7 +7,7 @@ FUNCIONALIDADES:
 2. Suporta imagens das questões (base64, URL, file_path)
 3. Layout em 2 colunas com quebras inteligentes
 4. Duas versões: SEM e COM resoluções
-5. Cabeçalho/Rodapé institucional UNEMAT
+5. Cabeçalho/Rodapé institucional UNEMAT (customizável por prova)
 """
 from app.core.config import settings
 import io
@@ -103,7 +103,7 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _load_static_img_base64(filename: str) -> str:
-        """Carrega imagens estáticas (header/footer) em base64."""
+        """Carrega imagens estáticas (header/footer padrão) em base64."""
         try:
             base_path = Path(__file__).resolve().parent.parent.parent / "static" / "img" / filename
             if base_path.exists():
@@ -115,33 +115,35 @@ class AdvancedPDFGenerator:
             return ""
 
     @staticmethod
+    def _resolve_image(
+        custom_value: Optional[str],
+        default_filename: str
+    ) -> str:
+        if custom_value:
+            if custom_value.startswith("data:"):
+                return custom_value
+            if custom_value.startswith("/"):
+                base_url = getattr(settings, 'API_BASE_URL', 'http://localhost:8000').rstrip('/')
+                return base_url + custom_value
+            return custom_value
+        return AdvancedPDFGenerator._load_static_img_base64(default_filename)
+
+    @staticmethod
     def _get_image_source_for_question(q: Any) -> Optional[str]:
-        """
-        Extrai a fonte da imagem com prioridade:
-        1. Campo 'image' (string, dict com 'url' ou objeto SQLAlchemy com 'url')
-        2. Campo 'images' (array legado)
-        Converte caminhos relativos para absolutos.
-        """
         base_url = getattr(settings, 'API_BASE_URL', 'http://localhost:8000')
         if base_url.endswith('/'):
             base_url = base_url[:-1]
 
         src = None
-
-        # 1. Tenta obter do campo 'image'
         image_field = AdvancedPDFGenerator._get_field(q, "image")
         if image_field is not None:
-            # Objeto SQLAlchemy (relação) com atributo 'url'
             if hasattr(image_field, 'url') and image_field.url:
                 src = image_field.url
-            # Dicionário com chave 'url'
             elif isinstance(image_field, dict) and 'url' in image_field:
                 src = image_field['url']
-            # String direta
             elif isinstance(image_field, str):
                 src = image_field
 
-        # 2. Se não encontrou, tenta campo 'images' (legado)
         if src is None:
             images_field = AdvancedPDFGenerator._get_field(q, "images")
             if images_field:
@@ -154,7 +156,6 @@ class AdvancedPDFGenerator:
                 elif isinstance(images_field, dict):
                     src = images_field.get('src')
 
-        # 3. Converte caminho relativo para absoluto, se necessário
         if src and isinstance(src, str) and src.startswith('/uploads/'):
             src = base_url + src
 
@@ -162,14 +163,6 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _get_image_class_for_question(q: Any) -> str:
-        """
-        Retorna a classe CSS baseada no papel semântico.
-        Prioridade:
-        1. Campo 'image_role' (string) - novo formato
-        2. Campo 'images' (array) - formato legado
-        3. Campo 'image' (dict) - fallback
-        """
-        # 1. Tenta obter diretamente do campo 'image_role'
         role = AdvancedPDFGenerator._get_field(q, "image_role")
         if role and isinstance(role, str):
             role = role.upper()
@@ -179,7 +172,6 @@ class AdvancedPDFGenerator:
                 return 'question-img-large'
             return 'question-img-medium'
 
-        # 2. Fallback: tenta obter do campo 'images' (array)
         images_field = AdvancedPDFGenerator._get_field(q, "images")
         if images_field:
             if isinstance(images_field, list) and len(images_field) > 0:
@@ -197,7 +189,6 @@ class AdvancedPDFGenerator:
                 if role == 'LARGE':
                     return 'question-img-large'
 
-        # 3. Fallback: campo 'image' com metadados (formato antigo)
         image_field = AdvancedPDFGenerator._get_field(q, "image")
         if isinstance(image_field, dict):
             role = image_field.get('role', 'MEDIUM').upper()
@@ -210,63 +201,112 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _get_image_style_attributes(q: Any) -> str:
-        """Gera atributos de estilo com base nas dimensões salvas."""
         images_field = AdvancedPDFGenerator._get_field(q, "images")
         if images_field:
             if isinstance(images_field, list) and len(images_field) > 0:
                 first = images_field[0]
                 if isinstance(first, dict):
-                    w = first.get('displayWidth') or first.get('displayWidth')
-                    h = first.get('displayHeight') or first.get('displayHeight')
+                    w = first.get('displayWidth')
+                    h = first.get('displayHeight')
                     if w and h:
                         return f' style="max-width: {w}px; max-height: {h}px;"'
         return ""
 
     @staticmethod
     def _build_exam_title(fase: str, anos: List[str], year: int = None) -> str:
-        """Constrói título da prova."""
+        """
+        Constrói o título da prova no padrão:
+          OLIMPÍADA DE MATEMÁTICA DA UNEMAT – 2024 – 3ª FASE – ENSINO MÉDIO
+          OLIMPÍADA DE MATEMÁTICA DA UNEMAT – 2024 – 3ª FASE – 4° e 5° Anos
+
+        Fase:
+          "1" → "1ª FASE"  |  "2" → "2ª FASE"  |  "3" → "3ª FASE"
+          "Final" → "FINAL"  |  "1ª fase" → "1ª FASE"
+
+        Anos (baseado nos labels do react-select):
+          Contém "Médio"       → "ENSINO MÉDIO"
+          Contém "Fundamental" → extrai número → "4° e 5° Anos"
+          Só números (ex: "4º") → "4° Ano"
+        """
         if year is None:
             year = datetime.now().year
-        fase_texto = fase.upper() if fase else "1ª FASE"
-        anos_texto = "Anos Diversos"
 
-        if anos:
-            import re
-            anos_numeros = []
-            tem_medio = False
-            tem_fundamental = False
+        # ── Formata fase ──────────────────────────────────────────────────────
+        fase_str = str(fase).strip() if fase else ""
+        sufixos = {"1": "1ª", "2": "2ª", "3": "3ª"}
 
-            if isinstance(anos, list):
-                for item in anos:
-                    if item:
-                        item_str = str(item)
-                        if 'médio' in item_str.lower() or 'medio' in item_str.lower():
-                            tem_medio = True
-                        elif 'fundamental' in item_str.lower():
-                            tem_fundamental = True
-                        numeros = re.findall(r'\d+', item_str)
-                        anos_numeros.extend(numeros)
-            elif isinstance(anos, str):
-                if 'médio' in anos.lower() or 'medio' in anos.lower():
-                    tem_medio = True
-                elif 'fundamental' in anos.lower():
-                    tem_fundamental = True
-                anos_numeros = re.findall(r'\d+', anos)
+        if not fase_str or fase_str.lower() in ("none", ""):
+            fase_texto = "1ª FASE"
+        elif re.match(r"^\d+$", fase_str):
+            # Número puro: "1" → "1ª FASE"
+            fase_texto = f"{sufixos.get(fase_str, fase_str + 'ª')} FASE"
+        elif re.match(r"^\d+[ªa°]?\s*fase$", fase_str, re.IGNORECASE):
+            # "1ª fase", "2a fase" → normaliza
+            num = re.search(r"\d+", fase_str).group()
+            fase_texto = f"{sufixos.get(num, num + 'ª')} FASE"
+        elif "final" in fase_str.lower():
+            fase_texto = "3ª FASE"
+        else:
+            fase_texto = fase_str.upper()
 
-            if anos_numeros:
-                anos_unicos = sorted(set(anos_numeros), key=lambda x: int(x))
-                if tem_medio and not tem_fundamental:
-                    anos_texto = "ENSINO MÉDIO"
+        # ── Formata anos ──────────────────────────────────────────────────────
+        # Normaliza para lista de strings
+        if isinstance(anos, list):
+            anos_lista = [str(a).strip() for a in anos if a and str(a).strip()]
+        elif isinstance(anos, str) and anos.strip():
+            anos_lista = [anos.strip()]
+        else:
+            anos_lista = []
+
+        logger.info(f"_build_exam_title: fase_str={repr(fase_str)} fase_texto={repr(fase_texto)} anos_lista={repr(anos_lista)}")
+
+        if not anos_lista:
+            anos_texto = "Anos Diversos"
+        else:
+            # Detecta Ensino Médio:
+            #   labels: "1º Médio", "2º Médio", "3º Médio"
+            #   values: "1º", "2º", "3º" quando acompanhados de contexto médio
+            # Regra: item com "Médio"/"Medio" OU value numérico puro <= 3 sem "Fundamental"
+            tem_medio       = any("médio" in a.lower() or "medio" in a.lower() for a in anos_lista)
+            tem_fundamental = any("fundamental" in a.lower() for a in anos_lista)
+
+            # Se nenhum label explicita "Fundamental" ou "Médio",
+            # usa os números para inferir: 1-3 = médio, 4-9 = fundamental
+            if not tem_medio and not tem_fundamental:
+                numeros_raw = []
+                for a in anos_lista:
+                    ns = re.findall(r"\d+", a)
+                    if ns:
+                        numeros_raw.append(int(ns[0]))
+                if numeros_raw:
+                    todos_medio      = all(n <= 3 for n in numeros_raw)
+                    todos_fundamental = all(n >= 4 for n in numeros_raw)
+                    if todos_medio:
+                        tem_medio = True
+                    elif todos_fundamental:
+                        tem_fundamental = True
+
+            if tem_medio and not tem_fundamental:
+                anos_texto = "ENSINO MÉDIO"
+            else:
+                # Extrai apenas o primeiro número de cada item
+                numeros = []
+                for a in anos_lista:
+                    ns = re.findall(r"\d+", a)
+                    if ns:
+                        numeros.append(ns[0])
+
+                numeros_unicos = sorted(set(numeros), key=lambda x: int(x))
+
+                if not numeros_unicos:
+                    anos_texto = "Anos Diversos"
+                elif len(numeros_unicos) == 1:
+                    anos_texto = f"{numeros_unicos[0]}° Ano"
+                elif len(numeros_unicos) == 2:
+                    anos_texto = f"{numeros_unicos[0]}° e {numeros_unicos[1]}° Anos"
                 else:
-                    labels = [f"{val}º" for val in anos_unicos]
-                    if len(labels) > 1:
-                        if len(labels) > 2:
-                            parte_inicial = ', '.join(labels[:-1])
-                            anos_texto = f"{parte_inicial} e {labels[-1]} Anos"
-                        else:
-                            anos_texto = f"{labels[0]} e {labels[1]} Anos"
-                    else:
-                        anos_texto = f"{labels[0]} Ano"
+                    parte_inicial = ", ".join(f"{n}°" for n in numeros_unicos[:-1])
+                    anos_texto = f"{parte_inicial} e {numeros_unicos[-1]}° Anos"
 
         return f"OLIMPÍADA DE MATEMÁTICA DA UNEMAT – {year} – {fase_texto} – {anos_texto}"
 
@@ -278,7 +318,6 @@ class AdvancedPDFGenerator:
         if isinstance(alt_raw, str):
             if not alt_raw.strip():
                 return {}
-            # Tentativa de parse como JSON (legado)
             try:
                 clean = alt_raw.strip()
                 if clean.startswith('"') and clean.endswith('"'):
@@ -295,7 +334,6 @@ class AdvancedPDFGenerator:
                         pass
             except:
                 pass
-            # Novo formato: linhas com "a) texto"
             lines = alt_raw.split('\n')
             alt_dict = {}
             for line in lines:
@@ -306,16 +344,14 @@ class AdvancedPDFGenerator:
                     alt_dict[key] = value
             if alt_dict:
                 return alt_dict
-            # Fallback para regex antigo
             pattern = r'["\']?([A-E])["\']?\s*:\s*["\']?([^,"\']+)["\']?'
             matches = re.findall(pattern, alt_raw, re.IGNORECASE)
             if matches:
                 return {key.upper(): value.strip() for key, value in matches}
         return {}
-    
+
     @staticmethod
     def _extract_correct_letter(correct_alternative: str) -> str:
-        """Extrai letra da alternativa correta."""
         if not correct_alternative:
             return ""
         text = correct_alternative.strip()
@@ -331,8 +367,6 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _render_questions_html(questions: List[Any], include_resolution: bool = False) -> str:
-        """Renderiza HTML das questões."""
-        
         html_parts = []
         for i, q in enumerate(questions, 1):
             raw_stmt = (
@@ -353,14 +387,11 @@ class AdvancedPDFGenerator:
                 alts_items = []
                 correct_letter = ""
                 if include_resolution:
-                    # Tenta obter a alternativa correta de vários campos possíveis
                     correct_alt = (
                         AdvancedPDFGenerator._get_field(q, "correctAlternative") or
-                        AdvancedPDFGenerator._get_field(q, "correct_alternative") or
-                        ""
+                        AdvancedPDFGenerator._get_field(q, "correct_alternative") or ""
                     )
                     correct_letter = AdvancedPDFGenerator._extract_correct_letter(correct_alt)
-                    logger.debug(f"Questão {i}: correct_alt={correct_alt}, correct_letter={correct_letter}")
                 for key in sorted(alts_dict.keys()):
                     val = alts_dict[key]
                     if val:
@@ -407,19 +438,29 @@ class AdvancedPDFGenerator:
         questions: List[Any],
         options: Dict[str, Any] = None
     ) -> io.BytesIO:
-        """Gera PDF da prova com Playwright (navegador reutilizado)."""
-        import time
-        from app.utils.playwright_manager import PlaywrightManager
-
         options = options or {}
-        fase = AdvancedPDFGenerator._get_field(exam, 'fase', '1ª FASE')
+
+        fase     = AdvancedPDFGenerator._get_field(exam, 'fase', '1ª FASE')
         anos_raw = AdvancedPDFGenerator._get_field(exam, 'anos', [])
-        anos = anos_raw if isinstance(anos_raw, list) else [str(anos_raw)]
-        year = AdvancedPDFGenerator._get_field(exam, 'ano', 2024)
+        anos     = anos_raw if isinstance(anos_raw, list) else [str(anos_raw)]
+        year     = AdvancedPDFGenerator._get_field(exam, 'ano', None)
+        if not year:
+            year = datetime.now().year
         titulo = AdvancedPDFGenerator._build_exam_title(fase, anos, year)
 
-        header_img = AdvancedPDFGenerator._load_static_img_base64("heder.PNG")
-        footer_img = AdvancedPDFGenerator._load_static_img_base64("footer.PNG")
+        custom_header = AdvancedPDFGenerator._get_field(exam, 'header_image', None)
+        custom_footer = AdvancedPDFGenerator._get_field(exam, 'footer_image', None)
+
+        header_img = AdvancedPDFGenerator._resolve_image(custom_header, "heder.PNG")
+        footer_img = AdvancedPDFGenerator._resolve_image(custom_footer, "footer.PNG")
+
+        raw_header_size = AdvancedPDFGenerator._get_field(exam, 'header_size', 100.0)
+        raw_footer_size = AdvancedPDFGenerator._get_field(exam, 'footer_size', 100.0)
+        header_size = max(50.0, min(150.0, float(raw_header_size or 100.0)))
+        footer_size = max(50.0, min(150.0, float(raw_footer_size or 100.0)))
+
+        header_width_mm = round(200 * header_size / 100, 1)
+        footer_width_mm = round(160 * footer_size / 100, 1)
 
         questions_sem_resolucao = AdvancedPDFGenerator._render_questions_html(questions, False)
         questions_com_resolucao = AdvancedPDFGenerator._render_questions_html(questions, True)
@@ -451,10 +492,10 @@ class AdvancedPDFGenerator:
                 .print-table tfoot {{ display: table-footer-group; }}
                 .print-table tr {{ page-break-inside: avoid; }}
                 .header-space {{ width: 100%; text-align: center; margin-bottom: 2mm; }}
-                .header-img {{ width: 200mm; height: auto; max-width: 100%; margin: 0 auto; }}
+                .header-img {{ width: {header_width_mm}mm; height: auto; max-width: 100%; margin: 0 auto; }}
                 .footer-space {{ position: fixed; bottom: 0; left: 0; width: 100%; text-align: center; z-index: 1000; margin: 0; }}
                 .print-table tfoot td {{ height: 30mm; border: none; vertical-align: bottom; }}
-                .footer-img {{ width: 160mm; height: auto; max-width: 100%; margin: 0 auto; }}
+                .footer-img {{ width: {footer_width_mm}mm; height: auto; max-width: 100%; margin: 0 auto; }}
                 .content-wrapper {{ width: 100%; }}
                 .titulo-prova {{ font-size: 14pt; font-weight: bold; margin: 0 0 1mm 33mm; text-align: left; }}
                 .campos-aluno {{ font-size: 14pt; margin: 0 0 5mm 8mm; }}
@@ -466,7 +507,7 @@ class AdvancedPDFGenerator:
                 .question-img-small {{ max-width: 50% !important; max-height: 280px !important; width: auto; height: auto; display: block; margin: 1px auto; }}
                 .question-img-medium {{ max-width: 80% !important; max-height: 150px !important; width: auto; height: auto; display: block; margin: 1px auto; }}
                 .question-img-large {{ max-width: 100% !important; height: auto; display: block; margin: 1px auto; }}
-                .alternativas {{ font-family: 'Arial', Times, serif; font-size: 14pt; margin-top: 1.5mm; margin-bottom: 1.5mm; display: flex; flex-wrap: wrap; gap: 6mm; justify-content: space-between; }} 
+                .alternativas {{ font-family: 'Arial', Times, serif; font-size: 14pt; margin-top: 1.5mm; margin-bottom: 1.5mm; display: flex; flex-wrap: wrap; gap: 6mm; justify-content: space-between; }}
                 .alt-item {{ white-space: nowrap; color: #000; flex-shrink: 0; }}
                 .alt-item-red {{ white-space: nowrap; color: #cc0000; font-weight: bold; flex-shrink: 0; }}
                 .resolucao-box {{ margin-top: 1mm; margin-bottom: 5mm; }}
@@ -503,14 +544,12 @@ class AdvancedPDFGenerator:
         """
 
         buffer = io.BytesIO()
-    
         browser = PlaywrightManager.get_browser()
         page = None
 
         try:
             page = browser.new_page()
             page.set_content(html_content, wait_until="domcontentloaded", timeout=60000)
-
             try:
                 page.wait_for_function(
                     "MathJax.typesetPromise ? MathJax.typesetPromise().then(() => true) : true",
@@ -539,19 +578,14 @@ class AdvancedPDFGenerator:
             if page:
                 page.close()
 
-    # =====================================================================
-    # Métodos auxiliares (nível da classe)
-    # =====================================================================
-    @staticmethod
-    def create_question_bank_pdf(questions: List[Any], options: Dict[str, Any] = None) -> io.BytesIO:
-        """Gera PDF do banco de questões."""
-        fake_exam = {"fase": "Banco de Questões", "anos": ["Todos"], "ano": 2024}
-        return AdvancedPDFGenerator.create_exam_pdf(fake_exam, questions, options)
+        @staticmethod
+        def create_question_bank_pdf(questions: List[Any], options: Dict[str, Any] = None) -> io.BytesIO:
+            fake_exam = {"fase": "Banco de Questões", "anos": ["Todos"], "ano": 2024}
+            return AdvancedPDFGenerator.create_exam_pdf(fake_exam, questions, options)
 
-    @staticmethod
-    def create_statistical_report(data: Dict[str, Any], options: Dict[str, Any] = None) -> io.BytesIO:
-        """Stub para relatórios estatísticos."""
-        buffer = io.BytesIO()
-        buffer.write(b"%PDF-1.4 (Report in development)")
-        buffer.seek(0)
-        return buffer
+        @staticmethod
+        def create_statistical_report(data: Dict[str, Any], options: Dict[str, Any] = None) -> io.BytesIO:
+            buffer = io.BytesIO()
+            buffer.write(b"%PDF-1.4 (Report in development)")
+            buffer.seek(0)
+            return buffer

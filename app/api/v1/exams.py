@@ -17,11 +17,12 @@ from app.schemas.exam import (
     ExamResponse,
     ExamFilters,
     ExamQuestionUpdate,
-    ExamPDFRequest
+    ExamPDFRequest,
+    ExamLayoutUpdate,
 )
 from app.services.exam_service import ExamService
 from app.services.pdf_service import PDFService
-from app.core.exceptions import AppException
+from app.core.exceptions import AppException, ValidationException
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -77,50 +78,49 @@ async def generate_pdf_from_payload(
 ):
     """Gera PDF a partir de payload JSON enviado pelo frontend."""
     try:
-        # Extrai dados básicos
-        name = payload.get("name", "Prova Sem Título")
-        fase = payload.get("fase", "")
-        anos_str = payload.get("anos", "")
+        name         = payload.get("name", "Prova Sem Título")
+        raw_fase      = payload.get("fase", "")
+        raw_anos      = payload.get("anos", [])
         raw_questions = payload.get("questoes", [])
+        ano_prova     = payload.get("ano", None) or __import__("datetime").datetime.now().year
+
+        # Normaliza anos: pode vir como string única ou lista de labels do react-select
+        # Exemplos: "4º Fundamental", ["4º Fundamental", "5º Fundamental"], ["1º Médio"]
+        if isinstance(raw_anos, str):
+            anos_lista = [raw_anos] if raw_anos.strip() else []
+        elif isinstance(raw_anos, list):
+            anos_lista = [str(a).strip() for a in raw_anos if a and str(a).strip()]
+        else:
+            anos_lista = []
+
+        # Normaliza fase: pode vir como value do select ("1","2","Final") ou label ("Fase 1")
+        fase = raw_fase if raw_fase else ""
 
         logger.info(f"📦 Gerando PDF para prova '{name}' com {len(raw_questions)} questões")
 
         formatted_questions = []
         for q in raw_questions:
             q_obj = {}
-
             q_obj['id'] = q.get("id")
             q_obj['name'] = q.get("name", "")
-
-            # Enunciado
             q_obj['question_statement'] = q.get("question_statement") or q.get("questionStatement") or ""
             q_obj['questionStatement'] = q_obj['question_statement']
-
-            # Alternativas (já vêm no formato "a) texto\nb) texto...")
             q_obj['alternatives'] = q.get("alternatives", "")
-
-            # Alternativa correta
             q_obj['correctAlternative'] = q.get("correct_alternative") or q.get("correctAlternative") or ""
             q_obj['correct_alternative'] = q_obj['correctAlternative']
-
-            # Resolução
             q_obj['detailedResolution'] = q.get("detailedResolution", "") or q.get("detailed_resolution", "")
             q_obj['detailed_resolution'] = q_obj['detailedResolution']
 
-           # Imagem: prioridade para o campo 'image'
             image_field = q.get("image")
             if image_field:
                 if isinstance(image_field, dict) and "url" in image_field:
                     q_obj['image'] = image_field['url']
                     q_obj['image_role'] = image_field.get('role')
-                    print(f"Questão ID {q.get('id')}: image_role = {q_obj.get('image_role')}")
                 elif isinstance(image_field, str):
                     q_obj['image'] = image_field
-                    # Não define image_role aqui (será pego depois)
                 else:
                     q_obj['image'] = None
             else:
-                # Fallback para array 'images' (legado)
                 images_array = q.get("images", [])
                 if images_array and isinstance(images_array, list) and len(images_array) > 0:
                     first = images_array[0]
@@ -132,27 +132,23 @@ async def generate_pdf_from_payload(
                 else:
                     q_obj['image'] = None
 
-            #captura o image_role do objeto original, se não foi definido acima
             if 'image_role' not in q_obj or q_obj['image_role'] is None:
                 q_obj['image_role'] = q.get("image_role")
 
-            # (opcional) converter URL relativa para absoluta
             if q_obj.get('image') and isinstance(q_obj['image'], str) and q_obj['image'].startswith('/uploads/'):
                 q_obj['image'] = 'http://localhost:8000' + q_obj['image']
 
             formatted_questions.append(q_obj)
 
-        # Cria mock do exame
         mock_exam = {
-            'name': name,
-            'fase': fase,
-            'anos': [anos_str] if isinstance(anos_str, str) else anos_str,
-            'escola': payload.get("escola", ""),
+            'name':      name,
+            'fase':      fase,
+            'anos':      anos_lista,
+            'escola':    payload.get("escola", ""),
             'municipio': payload.get("municipio", ""),
-            'ano': payload.get("ano", 2024)
+            'ano':       ano_prova,
         }
 
-        # Configuração do PDF request
         inst_name = getattr(settings, "DEFAULT_INSTITUTION_NAME", "Olimpíadas de Matemática")
         logo_path = getattr(settings, "DEFAULT_LOGO_PATH", None)
 
@@ -160,10 +156,10 @@ async def generate_pdf_from_payload(
             exam_id=None,
             questions=[],
             fase=fase,
-            anos=[anos_str] if isinstance(anos_str, str) else anos_str,
+            anos=anos_lista,
             escola=payload.get("escola", ""),
             municipio=payload.get("municipio", ""),
-            ano=payload.get("ano", 2024),
+            ano=ano_prova,
             include_answers=True,
             cover_info={
                 "logo_path": logo_path,
@@ -172,14 +168,12 @@ async def generate_pdf_from_payload(
             }
         )
 
-                # ========== GERAÇÃO DO PDF ==========
         pdf_buffer = await PDFService.generate_exam_pdf(
             mock_exam,
             formatted_questions,
             pdf_request
         )
 
-        # ========== PREPARAÇÃO DA RESPOSTA ==========
         safe_name = "".join([c if c.isalnum() else "_" for c in name])
         filename = f"prova_{safe_name}.pdf"
 
@@ -191,7 +185,7 @@ async def generate_pdf_from_payload(
                 "Cache-Control": "no-cache"
             }
         )
-    
+
     except Exception as e:
         logger.error(f"Erro ao gerar PDF via payload: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -246,6 +240,40 @@ async def update_exam_questions(
             "message": "Questões da prova atualizadas com sucesso",
             "data": {"exam": ExamResponse.from_orm(exam)}
         }
+    except AppException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.post("/{exam_id}/layout", response_model=dict)
+async def update_exam_layout(
+    exam_id: int,
+    layout_data: ExamLayoutUpdate,
+    current_user: User = Depends(get_professor_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Atualiza cabeçalho e/ou rodapé do PDF da prova.
+    Aceita JSON com:
+      header_image / footer_image : base64 da imagem, "" para restaurar padrão, null para não alterar
+      header_size  / footer_size  : percentual 50-150
+    """
+    try:
+        exam = ExamService.update_exam_layout(
+            db=db,
+            exam_id=exam_id,
+            current_user=current_user,
+            header_image_b64=layout_data.header_image,
+            footer_image_b64=layout_data.footer_image,
+            header_size=layout_data.header_size,
+            footer_size=layout_data.footer_size,
+        )
+        return {
+            "success": True,
+            "message": "Layout da prova atualizado com sucesso",
+            "data": {"exam": ExamResponse.from_orm(exam)}
+        }
+    except ValidationException as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=e.detail)
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 

@@ -28,14 +28,11 @@ class PDFService:
         pdf_request: ExamPDFRequest,
         output_path: Optional[str] = None
     ) -> io.BytesIO:
-        # Prepara dados do exame
         exam_data = PDFService._prepare_exam_data(exam, pdf_request)
 
-        # Prepara dados das questões (simplificado, sem processar imagem)
         logger.info(f"📦 Preparando {len(questions)} questões para PDF")
         questions_data = PDFService._prepare_questions_data(questions)
 
-        # Geração do PDF em thread separada
         loop = asyncio.get_event_loop()
         pdf_buffer = await loop.run_in_executor(
             PDFService._executor,
@@ -81,21 +78,44 @@ class PDFService:
 
     @staticmethod
     def _prepare_exam_data(exam: Any, pdf_request: ExamPDFRequest) -> Dict[str, Any]:
+        """
+        Monta o dict que será passado para AdvancedPDFGenerator.create_exam_pdf.
+
+        Inclui os campos de layout (header_image, footer_image, header_size,
+        footer_size) para que o gerador use a imagem customizada da prova
+        em vez da imagem estática padrão.
+        """
         if isinstance(exam, dict):
             return {
-                "fase": pdf_request.fase or exam.get('fase', '1ª FASE'),
-                "anos": pdf_request.anos or exam.get('anos', []),
-                "escola": pdf_request.escola or exam.get('escola', ''),
-                "municipio": pdf_request.municipio or exam.get('municipio', ''),
-                "ano": pdf_request.ano or exam.get('ano', 2024),
+                "fase":         pdf_request.fase      or exam.get('fase', '1ª FASE'),
+                "anos":         pdf_request.anos      or exam.get('anos', []),
+                "escola":       pdf_request.escola    or exam.get('escola', ''),
+                "municipio":    pdf_request.municipio or exam.get('municipio', ''),
+                "ano":          pdf_request.ano       or exam.get('ano', 2024),
+                # Campos de layout — passados direto do dict (payload on-the-fly)
+                "header_image": exam.get('header_image'),
+                "footer_image": exam.get('footer_image'),
+                "header_size":  exam.get('header_size', 100.0),
+                "footer_size":  exam.get('footer_size', 100.0),
             }
         else:
+            # Objeto SQLAlchemy (prova salva no banco)
             return {
-                "fase": pdf_request.fase or getattr(exam, 'fase', '1ª FASE'),
-                "anos": pdf_request.anos or getattr(exam, 'anos', []),
-                "escola": pdf_request.escola or getattr(exam, 'escola', ''),
-                "municipio": pdf_request.municipio or getattr(exam, 'municipio', ''),
-                "ano": pdf_request.ano or getattr(exam, 'ano', 2024),
+                "fase":         pdf_request.fase      or getattr(exam, 'fase', '1ª FASE'),
+                "anos":         pdf_request.anos      or getattr(exam, 'anos', []),
+                "escola":       pdf_request.escola    or getattr(exam, 'escola', ''),
+                "municipio":    pdf_request.municipio or getattr(exam, 'municipio', ''),
+                # 'ano' não existe no model — usa ano de criação ou ano atual
+                "ano":          pdf_request.ano or (
+                    getattr(exam, 'created_at', None).year
+                    if getattr(exam, 'created_at', None) else
+                    __import__('datetime').datetime.now().year
+                ),
+                # Campos de layout — lidos do objeto ORM
+                "header_image": getattr(exam, 'header_image', None),
+                "footer_image": getattr(exam, 'footer_image', None),
+                "header_size":  getattr(exam, 'header_size',  100.0),
+                "footer_size":  getattr(exam, 'footer_size',  100.0),
             }
 
     @staticmethod
@@ -110,32 +130,32 @@ class PDFService:
             try:
                 if isinstance(q, dict):
                     question_data = {
-                        "id": q.get("id"),
+                        "id":                 q.get("id"),
                         "question_statement": q.get("question_statement") or q.get("questionStatement") or "",
-                        "questionStatement": q.get("questionStatement") or q.get("question_statement") or "",
-                        "image": q.get("image"),  # já é URL absoluta
-                        "image_role": q.get("image_role"),  # <-- NOVO
-                        "alternatives": q.get("alternatives", {}),
+                        "questionStatement":  q.get("questionStatement")  or q.get("question_statement") or "",
+                        "image":              q.get("image"),
+                        "image_role":         q.get("image_role"),
+                        "alternatives":       q.get("alternatives", {}),
                         "correctAlternative": q.get("correctAlternative") or q.get("correct_alternative", ""),
-                        "correct_alternative": q.get("correctAlternative") or q.get("correct_alternative", ""),
-                        "name": q.get("name", ""),
+                        "correct_alternative":q.get("correctAlternative") or q.get("correct_alternative", ""),
+                        "name":               q.get("name", ""),
                         "detailedResolution": q.get("detailedResolution", ""),
-                        "detailed_resolution": q.get("detailedResolution", ""),
+                        "detailed_resolution":q.get("detailedResolution", ""),
                     }
                 else:
                     # Objeto SQLAlchemy
                     question_data = {
-                        "id": getattr(q, 'id', None),
+                        "id":                 getattr(q, 'id', None),
                         "question_statement": getattr(q, 'question_statement', '') or getattr(q, 'questionStatement', ''),
-                        "questionStatement": getattr(q, 'questionStatement', '') or getattr(q, 'question_statement', ''),
-                        "image": PDFService._extract_image_from_sqlalchemy(q),
-                        "image_role": getattr(q, 'image_role', None),  # <-- NOVO
-                        "alternatives": PDFService._sanitize_alternatives(q),
+                        "questionStatement":  getattr(q, 'questionStatement', '')  or getattr(q, 'question_statement', ''),
+                        "image":              PDFService._extract_image_from_sqlalchemy(q),
+                        "image_role":         getattr(q, 'image_role', None),
+                        "alternatives":       PDFService._sanitize_alternatives(q),
                         "correctAlternative": getattr(q, 'correctAlternative', '') or getattr(q, 'correct_alternative', ''),
-                        "correct_alternative": getattr(q, 'correctAlternative', '') or getattr(q, 'correct_alternative', ''),
-                        "name": getattr(q, 'name', ''),
+                        "correct_alternative":getattr(q, 'correctAlternative', '') or getattr(q, 'correct_alternative', ''),
+                        "name":               getattr(q, 'name', ''),
                         "detailedResolution": getattr(q, 'detailedResolution', '') or getattr(q, 'detailed_resolution', ''),
-                        "detailed_resolution": getattr(q, 'detailed_resolution', '') or getattr(q, 'detailedResolution', ''),
+                        "detailed_resolution":getattr(q, 'detailed_resolution', '') or getattr(q, 'detailedResolution', ''),
                     }
 
                 clean_questions.append(question_data)
@@ -144,17 +164,17 @@ class PDFService:
                 logger.error(f"Erro ao processar questão {idx}: {e}")
                 q_id = q.get('id') if isinstance(q, dict) else getattr(q, 'id', '?')
                 clean_questions.append({
-                    "id": q_id,
+                    "id":                 q_id,
                     "question_statement": f"[Erro ao carregar questão {q_id}]",
-                    "questionStatement": f"[Erro ao carregar questão {q_id}]",
-                    "image": None,
-                    "image_role": None,
-                    "alternatives": {},
+                    "questionStatement":  f"[Erro ao carregar questão {q_id}]",
+                    "image":              None,
+                    "image_role":         None,
+                    "alternatives":       {},
                     "correctAlternative": "-",
-                    "correct_alternative": "-",
-                    "name": "",
+                    "correct_alternative":"-",
+                    "name":               "",
                     "detailedResolution": "",
-                    "detailed_resolution": "",
+                    "detailed_resolution":"",
                 })
 
         logger.info(f"✅ {len(clean_questions)} questões preparadas")
