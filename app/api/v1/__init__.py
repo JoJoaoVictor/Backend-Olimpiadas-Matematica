@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from . import auth, users, categories, graus, images, questions, exams, admin
+from . import auth, users, categories, graus, images, questions, exams, admin, notifications
 
 api_router = APIRouter()
 

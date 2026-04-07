@@ -6,6 +6,7 @@ from .image import Image
 from .question import Question, DifficultyLevel
 from .exam import Exam, ExamStatus
 from .associations import ExamQuestion
+from .notification import Notification, NotificationType, EntityType
  
 __all__ = [
     "BaseModel",
@@ -19,4 +20,7 @@ __all__ = [
     "Exam",
     "ExamStatus", 
     "ExamQuestion",
+    "Notification",
+    "NotificationType",
+    "EntityType",
 ]

@@ -67,7 +67,7 @@ from app.database import engine, Base
 # --------------------------------------------------------------------------------
 
 # Importa os roteadores de cada módulo da versão 1 da API
-from app.api.v1 import auth, users, questions, categories, graus, exams, images
+from app.api.v1 import auth, users, questions, categories, graus, exams, images, notifications
 
 # --------------------------------------------------------------------------------
 # 1. CONFIGURAÇÃO DE LOGS
@@ -243,6 +243,7 @@ app.include_router(graus.router, prefix="/api/v1/graus", tags=["Graus"])
 app.include_router(images.router, prefix="/api/v1/images", tags=["Imagens"])
 app.include_router(questions.router, prefix="/api/v1/questions", tags=["Questões"])
 app.include_router(exams.router, prefix="/api/v1/exams", tags=["Provas"])
+app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notificações"])
 
 # --------------------------------------------------------------------------------
 # 10. EXECUÇÃO DA APLICAÇÃO

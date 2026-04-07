@@ -5,22 +5,22 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import (
-    get_current_user, 
-    get_admin_user, 
+    get_current_user,
+    get_admin_user,
     get_professor_user,
     get_professor_or_revisor_user,
     get_any_staff_user
 )
 from app.models.user import User
 from app.schemas.question import (
-    QuestionCreate, QuestionUpdate, QuestionResponse, 
+    QuestionCreate, QuestionUpdate, QuestionResponse,
     QuestionListResponse, QuestionFilters
 )
 from app.services.question_service import QuestionService
 from app.core.exceptions import AppException
 
 router = APIRouter()
-  
+
 
 @router.get("", response_model=dict)
 async def list_questions(
@@ -35,7 +35,14 @@ async def list_questions(
     bncc_theme: str = Query(None, description="Tema BNCC"),
     ability_code: str = Query(None, description="Código da habilidade"),
     author_id: int = Query(None, description="Filtro por autor"),
-    current_user: User = Depends(get_current_user),
+    status: str = Query(None, description="Filtro por status"),
+    reviewer_id: int = Query(None, description="Filtro por ID do revisor"),
+    # ── ALTERAÇÃO 1 ──────────────────────────────────────────────────────────
+    # Antes: get_current_user (qualquer autenticado, inclusive STUDENT)
+    # Agora: get_any_staff_user (bloqueia STUDENT na listagem)
+    # Impacto: estudantes não conseguem listar o banco de questões via API,
+    # mesmo que tentem acessar diretamente pela URL.
+    current_user: User = Depends(get_any_staff_user),
     db: Session = Depends(get_db)
 ):
     """Lista questões com filtros."""
@@ -51,16 +58,18 @@ async def list_questions(
             phase_level=phase_level,
             bncc_theme=bncc_theme,
             ability_code=ability_code,
-            author_id=author_id
+            author_id=author_id,
+            status=status,
+            reviewer_id=reviewer_id
         )
-        
+
         result = QuestionService.get_questions(db, filters, current_user)
-        
+
         return {
             "success": True,
             "data": result
         }
-        
+
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -68,19 +77,19 @@ async def list_questions(
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_question(
     question_data: QuestionCreate,
-    current_user: User = Depends(get_professor_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Cria nova questão."""
+    """Cria nova questão. STUDENT, PROFESSOR e ADMIN podem criar."""
     try:
         question = QuestionService.create_question(db, question_data, current_user)
-        
+
         return {
             "success": True,
             "message": "Questão criada com sucesso",
             "data": {"question": QuestionResponse.from_orm(question)}
         }
-        
+
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -88,18 +97,27 @@ async def create_question(
 @router.get("/{question_id}", response_model=dict)
 async def get_question(
     question_id: int,
-    current_user: User = Depends(get_admin_user),
+    # ── ALTERAÇÃO 2 ──────────────────────────────────────────────────────────
+    # Antes: get_admin_user → PROFESSOR e REVISOR recebiam 403 ao abrir qualquer
+    #        questão para editar/visualizar, quebrando a tela silenciosamente e
+    #        fazendo campos como "nome do professor" sumirem.
+    # Agora: get_professor_or_revisor_user → ADMIN, REVISOR e PROFESSOR podem
+    #        buscar uma questão por ID. A lógica de ownership (professor só vê
+    #        a própria) fica em QuestionService.get_question_by_id, que já
+    #        recebe current_user e pode aplicar o filtro lá.
+    # Impacto direto: resolve o 403 e o sumiço dos campos na tela de edição.
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
-    """Busca questão por ID."""
+    """Busca questão por ID. PROFESSOR vê a própria; REVISOR e ADMIN veem qualquer uma."""
     try:
         question = QuestionService.get_question_by_id(db, question_id, current_user)
-        
+
         return {
             "success": True,
             "data": {"question": QuestionResponse.from_orm(question)}
         }
-        
+
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -108,19 +126,25 @@ async def get_question(
 async def update_question(
     question_id: int,
     question_data: QuestionUpdate,
-    current_user: User = Depends(get_current_user),
+    # ── ALTERAÇÃO 3 (REVISADA 2) ────────────────────────────────────────────
+    # Antes: get_professor_user (bloqueava REVISOR)
+    # Agora: get_professor_or_revisor_user (permite REVISOR editar)
+    # Impacto: REVISOR pode editar qualquer questão.
+    # PROFESSOR edita apenas suas próprias.
+    # ADMIN edita qualquer uma.
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
-    """Atualiza questão."""
+    """Atualiza questão. PROFESSOR edita suas próprias; REVISOR e ADMIN editam qualquer uma."""
     try:
         question = QuestionService.update_question(db, question_id, question_data, current_user)
-        
+
         return {
             "success": True,
             "message": "Questão atualizada com sucesso",
             "data": {"question": QuestionResponse.from_orm(question)}
         }
-        
+
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -128,18 +152,47 @@ async def update_question(
 @router.delete("/{question_id}", response_model=dict)
 async def delete_question(
     question_id: int,
-    current_user: User = Depends(get_current_user),
+    # ── ALTERAÇÃO 4 (REVISADA 2) ────────────────────────────────────────────
+    # Antes: get_professor_user
+    # Agora: get_professor_or_revisor_user (permite REVISOR deletar)
+    # Impacto: REVISOR pode deletar qualquer questão.
+    # PROFESSOR deleta apenas suas próprias.
+    # ADMIN deleta qualquer uma.
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
-    """Remove questão."""
+    """Remove questão. PROFESSOR remove apenas a própria; REVISOR e ADMIN removem qualquer uma."""
     try:
-        question = QuestionService.delete_question(db, question_id, current_user)
-        
+        QuestionService.delete_question(db, question_id, current_user)
+
         return {
             "success": True,
             "message": "Questão removida com sucesso"
         }
-        
+
+    except AppException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@router.patch("/{question_id}/comments", response_model=dict)
+async def add_question_comment(
+    question_id: int,
+    comment: str = None,
+    current_user: User = Depends(get_professor_or_revisor_user),
+    db: Session = Depends(get_db)
+):
+    """Adiciona comentário de revisão. REVISOR, PROFESSOR e ADMIN."""
+    try:
+        question = QuestionService.add_reviewer_comment(
+            db, question_id, comment, current_user
+        )
+
+        return {
+            "success": True,
+            "message": "Comentário adicionado com sucesso",
+            "data": {"question": QuestionResponse.from_orm(question)}
+        }
+
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -150,16 +203,16 @@ async def approve_question(
     current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
-    """Aprova questão (apenas revisores e professores)."""
-    try:    
+    """Aprova questão. Apenas REVISOR, PROFESSOR e ADMIN."""
+    try:
         question = QuestionService.approve_question(db, question_id, current_user)
-        
+
         return {
             "success": True,
             "message": "Questão aprovada com sucesso",
             "data": {"question": QuestionResponse.from_orm(question)}
         }
-        
+
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
@@ -169,18 +222,17 @@ async def get_question_stats(
     current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db)
 ):
-    """Estatísticas de questões (apenas admin)."""
+    """Estatísticas de questões. Apenas ADMIN."""
     try:
         stats = QuestionService.get_question_stats(db)
-        
+
         return {
             "success": True,
             "data": {"stats": stats}
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Erro ao obter estatísticas"
         )
-

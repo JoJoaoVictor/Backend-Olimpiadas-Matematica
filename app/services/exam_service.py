@@ -17,6 +17,8 @@ from app.models.associations import ExamQuestion
 from app.schemas.exam import ExamCreate, ExamUpdate, ExamFilters, ExamQuestionUpdate
 from app.core.exceptions import NotFoundException, ForbiddenException, ConflictException, ValidationException
 from app.core.config import settings
+from app.models.notification import NotificationType, EntityType
+from app.services.notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +131,9 @@ class ExamService:
         if not exam:
             raise NotFoundException("Prova não encontrada")
 
+        # REVISOR pode acessar qualquer prova
+        # PROFESSOR só acessa suas próprias
+        # ADMIN acessa qualquer uma
         if current_user.role == UserRole.PROFESSOR and exam.author_id != current_user.id:
             raise ForbiddenException("Sem permissão para acessar esta prova")
 
@@ -138,7 +143,17 @@ class ExamService:
     def update_exam(db: Session, exam_id: int, exam_data: ExamUpdate, current_user: User) -> Exam:
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        if exam.author_id != current_user.id and current_user.role != UserRole.ADMIN:
+        # Verifica permissão (autor, revisor ou admin)
+        # REVISOR pode editar qualquer prova
+        # PROFESSOR só edita a própria
+        # ADMIN edita qualquer uma
+        if current_user.role == UserRole.PROFESSOR:
+            if exam.author_id != current_user.id:
+                raise ForbiddenException("PROFESSOR só pode editar suas próprias provas")
+        elif current_user.role == UserRole.REVISOR:
+            # REVISOR pode editar qualquer prova
+            pass
+        elif current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Sem permissão para editar esta prova")
 
         update_data = exam_data.dict(exclude_unset=True)
@@ -148,6 +163,21 @@ class ExamService:
         try:
             db.commit()
             db.refresh(exam)
+            
+            # Notifica autor se REVISOR/ADMIN editou
+            if current_user.role in [UserRole.REVISOR, UserRole.ADMIN]:
+                if exam.author_id != current_user.id:
+                    NotificationService.create_notification(
+                        db=db,
+                        user_id=exam.author_id,
+                        notification_type=NotificationType.EXAM_REVISED,
+                        title="Prova Revisada",
+                        message=f"{current_user.name} revisou a prova '{exam.name}'",
+                        entity_type=EntityType.EXAM,
+                        entity_id=exam.id,
+                        triggered_by_user_id=current_user.id
+                    )
+            
             return exam
         except Exception as e:
             db.rollback()
@@ -170,7 +200,17 @@ class ExamService:
         """
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        if exam.author_id != current_user.id and current_user.role != UserRole.ADMIN:
+        # Verifica permissão (autor, revisor ou admin)
+        # REVISOR pode editar layout de qualquer prova
+        # PROFESSOR só edita suas próprias
+        # ADMIN edita qualquer uma
+        if current_user.role == UserRole.PROFESSOR:
+            if exam.author_id != current_user.id:
+                raise ForbiddenException("PROFESSOR só pode editar suas próprias provas")
+        elif current_user.role == UserRole.REVISOR:
+            # REVISOR pode editar layout de qualquer prova
+            pass
+        elif current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Sem permissão para editar esta prova")
 
         upload_root = Path(settings.UPLOAD_PATH)
@@ -238,6 +278,21 @@ class ExamService:
             db.commit()
             db.refresh(exam)
             logger.info(f"Layout da prova {exam_id} atualizado por usuário {current_user.id}")
+            
+            # Notifica autor se REVISOR/ADMIN editou layout
+            if current_user.role in [UserRole.REVISOR, UserRole.ADMIN]:
+                if exam.author_id != current_user.id:
+                    NotificationService.create_notification(
+                        db=db,
+                        user_id=exam.author_id,
+                        notification_type=NotificationType.EXAM_REVISED,
+                        title="Layout da Prova Atualizado",
+                        message=f"{current_user.name} atualizou o layout da prova '{exam.name}'",
+                        entity_type=EntityType.EXAM,
+                        entity_id=exam.id,
+                        triggered_by_user_id=current_user.id
+                    )
+            
             return exam
         except Exception as e:
             db.rollback()
@@ -252,7 +307,17 @@ class ExamService:
     ) -> Exam:
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        if exam.author_id != current_user.id and current_user.role != UserRole.ADMIN:
+        # Verifica permissão (autor, revisor ou admin)
+        # REVISOR pode editar questões de qualquer prova
+        # PROFESSOR só edita suas próprias
+        # ADMIN edita qualquer uma
+        if current_user.role == UserRole.PROFESSOR:
+            if exam.author_id != current_user.id:
+                raise ForbiddenException("PROFESSOR só pode editar suas próprias provas")
+        elif current_user.role == UserRole.REVISOR:
+            # REVISOR pode editar questões de qualquer prova
+            pass
+        elif current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Sem permissão para editar esta prova")
 
         questions = db.query(Question.id).filter(
@@ -278,6 +343,21 @@ class ExamService:
             exam.total_questions = len(questions_data.question_ids)
             db.commit()
             db.refresh(exam)
+            
+            # Notifica autor se REVISOR/ADMIN editou questões
+            if current_user.role in [UserRole.REVISOR, UserRole.ADMIN]:
+                if exam.author_id != current_user.id:
+                    NotificationService.create_notification(
+                        db=db,
+                        user_id=exam.author_id,
+                        notification_type=NotificationType.EXAM_REVISED,
+                        title="Questões da Prova Atualizadas",
+                        message=f"{current_user.name} atualizou as questões da prova '{exam.name}'",
+                        entity_type=EntityType.EXAM,
+                        entity_id=exam.id,
+                        triggered_by_user_id=current_user.id
+                    )
+            
             return exam
 
         except Exception as e:
@@ -290,7 +370,17 @@ class ExamService:
         """Remove prova e seus arquivos de layout."""
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        if exam.author_id != current_user.id and current_user.role != UserRole.ADMIN:
+        # Verifica permissão (autor, revisor ou admin)
+        # REVISOR pode deletar qualquer prova
+        # PROFESSOR só deleta suas próprias
+        # ADMIN deleta qualquer uma
+        if current_user.role == UserRole.PROFESSOR:
+            if exam.author_id != current_user.id:
+                raise ForbiddenException("PROFESSOR só pode deletar suas próprias provas")
+        elif current_user.role == UserRole.REVISOR:
+            # REVISOR pode deletar qualquer prova
+            pass
+        elif current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Sem permissão para deletar esta prova")
 
         if exam.status == ExamStatus.APLICADA:
@@ -314,12 +404,35 @@ class ExamService:
     ) -> Exam:
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
+        # Apenas ADMIN pode mudar status para APROVADA
         if new_status == ExamStatus.APROVADA and current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Apenas administradores podem aprovar provas")
+
+        # REVISOR pode mudar status de qualquer prova (exceto APROVADA)
+        # PROFESSOR só muda status de suas próprias provas
+        # ADMIN pode mudar status de qualquer prova
+        if current_user.role == UserRole.PROFESSOR:
+            if exam.author_id != current_user.id:
+                raise ForbiddenException("PROFESSOR só pode alterar status de suas próprias provas")
 
         exam.status = new_status
         db.commit()
         db.refresh(exam)
+        
+        # Notifica autor se REVISOR/ADMIN mudou status
+        if current_user.role in [UserRole.REVISOR, UserRole.ADMIN]:
+            if exam.author_id != current_user.id:
+                NotificationService.create_notification(
+                    db=db,
+                    user_id=exam.author_id,
+                    notification_type=NotificationType.EXAM_REVISED,
+                    title="Status da Prova Alterado",
+                    message=f"{current_user.name} alterou o status da prova '{exam.name}' para {new_status.value}",
+                    entity_type=EntityType.EXAM,
+                    entity_id=exam.id,
+                    triggered_by_user_id=current_user.id
+                )
+        
         return exam
 
     @staticmethod

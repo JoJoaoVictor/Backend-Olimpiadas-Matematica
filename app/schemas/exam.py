@@ -43,7 +43,7 @@ class ExamCreate(ExamBase):
 class ExamUpdate(BaseModel):
     """Schema para atualização de prova."""
     name: Optional[str] = Field(None, min_length=5, max_length=200)
-    fase: Optional[str] = Field(None, min_length=2, max_length=50)
+    fase: Optional[str] = Field(None, min_length=1, max_length=50)
     anos: Optional[List[str]] = Field(None, min_items=1)
     status: Optional[ExamStatus] = None
     description: Optional[str] = Field(None, max_length=1000)

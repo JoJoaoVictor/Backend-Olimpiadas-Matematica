@@ -8,7 +8,12 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user, get_professor_user
+from app.dependencies import (
+    get_current_user, 
+    get_professor_user,
+    get_professor_or_revisor_user,
+    get_admin_user
+)
 from app.models.user import User
 from app.models.exam import ExamStatus
 from app.schemas.exam import (
@@ -38,7 +43,7 @@ async def list_exams(
     fase: Optional[str] = Query(None),
     anos: Optional[List[str]] = Query(None),
     author_id: Optional[int] = Query(None),
-    current_user: User = Depends(get_professor_user),
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
     try:
@@ -197,7 +202,7 @@ async def generate_pdf_from_payload(
 @router.get("/{exam_id}", response_model=dict)
 async def get_exam(
     exam_id: int,
-    current_user: User = Depends(get_professor_user),
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
     try:
@@ -212,7 +217,7 @@ async def get_exam(
 async def update_exam(
     exam_id: int,
     exam_data: ExamUpdate,
-    current_user: User = Depends(get_professor_user),
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
     try:
@@ -230,7 +235,7 @@ async def update_exam(
 async def update_exam_questions(
     exam_id: int,
     questions_data: ExamQuestionUpdate,
-    current_user: User = Depends(get_professor_user),
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
     try:
@@ -248,7 +253,7 @@ async def update_exam_questions(
 async def update_exam_layout(
     exam_id: int,
     layout_data: ExamLayoutUpdate,
-    current_user: User = Depends(get_professor_user),
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -281,7 +286,7 @@ async def update_exam_layout(
 @router.delete("/{exam_id}", response_model=dict)
 async def delete_exam(
     exam_id: int,
-    current_user: User = Depends(get_professor_user),
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
     try:
@@ -295,7 +300,7 @@ async def delete_exam(
 async def change_exam_status(
     exam_id: int,
     new_status: ExamStatus,
-    current_user: User = Depends(get_professor_user),
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
     try:
@@ -314,7 +319,7 @@ async def generate_exam_pdf(
     exam_id: int,
     include_answers: bool = Query(False),
     institution_name: Optional[str] = Query(None),
-    current_user: User = Depends(get_professor_user),
+    current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
     try:

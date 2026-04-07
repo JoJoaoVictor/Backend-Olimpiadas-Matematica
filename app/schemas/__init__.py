@@ -40,6 +40,12 @@ from .exam import (
     ExamFilters, ExamPDFRequest
 )
 
+# NOTIFICATION
+from .notification import (
+    NotificationBase, NotificationCreate, NotificationResponse,
+    NotificationListResponse
+)
+
 __all__ = [
     # Base
     "BaseSchema", "TimestampedSchema",
@@ -69,4 +75,8 @@ __all__ = [
     "ExamBase", "ExamCreate", "ExamUpdate", "ExamQuestionUpdate",
     "ExamQuestionResponse", "ExamResponse", "ExamListResponse", 
     "ExamFilters", "ExamPDFRequest",
+    
+    # Notification
+    "NotificationBase", "NotificationCreate", "NotificationResponse",
+    "NotificationListResponse",
 ]

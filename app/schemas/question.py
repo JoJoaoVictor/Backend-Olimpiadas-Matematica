@@ -106,5 +106,6 @@ class QuestionFilters(BaseModel):
     bncc_theme: Optional[str] = Field(None, max_length=200)
     ability_code: Optional[str] = Field(None, max_length=20)
     author_id: Optional[int] = Field(None, gt=0)
+    reviewer_id: Optional[int] = Field(None, gt=0)
     page: int = Field(default=1, gt=0)
     per_page: int = Field(default=20, gt=0, le=100)
