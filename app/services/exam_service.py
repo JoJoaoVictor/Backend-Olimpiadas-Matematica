@@ -24,21 +24,18 @@ logger = logging.getLogger(__name__)
 
 
 def _path_to_file(upload_root: Path, stored_path: str) -> Path:
-    """
-    Converte o path armazenado no banco (/uploads/layouts/header/xxx.png)
-    para o path absoluto no disco usando removeprefix (Python 3.9+).
-    """
     relative = stored_path.removeprefix("/uploads/").removeprefix("uploads/")
     return upload_root / relative
 
 
 class ExamService:
-    """Serviços de provas."""
 
     @staticmethod
     def create_exam(db: Session, exam_data: ExamCreate, current_user: User) -> Exam:
         try:
-            questions = db.query(Question.id).filter(Question.id.in_(exam_data.question_ids)).all()
+            questions = db.query(Question.id).filter(
+                Question.id.in_(exam_data.question_ids)
+            ).all()
             found_ids = {q.id for q in questions}
 
             if len(found_ids) != len(exam_data.question_ids):
@@ -53,6 +50,10 @@ class ExamService:
                 description=exam_data.description,
                 estimated_duration=exam_data.estimated_duration,
                 author_id=current_user.id,
+                # Snapshot do nome salvo no momento da criação.
+                # Mesmo que o usuário seja deletado futuramente, o nome
+                # do criador permanece registrado na prova.
+                author_name=current_user.name,
                 total_questions=len(exam_data.question_ids)
             )
 
@@ -60,10 +61,9 @@ class ExamService:
             db.flush()
 
             exam_questions = [
-                ExamQuestion(exam_id=exam.id, question_id=question_id, order_index=i + 1)
-                for i, question_id in enumerate(exam_data.question_ids)
+                ExamQuestion(exam_id=exam.id, question_id=qid, order_index=i + 1)
+                for i, qid in enumerate(exam_data.question_ids)
             ]
-
             if exam_questions:
                 db.bulk_save_objects(exam_questions)
 
@@ -108,7 +108,9 @@ class ExamService:
 
         total = query.count()
         query = query.order_by(desc(Exam.created_at))
-        exams = query.offset((filters.page - 1) * filters.per_page).limit(filters.per_page).all()
+        exams = query.offset(
+            (filters.page - 1) * filters.per_page
+        ).limit(filters.per_page).all()
 
         exam_schemas = [ExamResponse.from_orm(exam) for exam in exams]
         pages = (total + filters.per_page - 1) // filters.per_page
@@ -131,27 +133,21 @@ class ExamService:
         if not exam:
             raise NotFoundException("Prova não encontrada")
 
-        # REVISOR pode acessar qualquer prova
-        # PROFESSOR só acessa suas próprias
-        # ADMIN acessa qualquer uma
         if current_user.role == UserRole.PROFESSOR and exam.author_id != current_user.id:
             raise ForbiddenException("Sem permissão para acessar esta prova")
 
         return exam
 
     @staticmethod
-    def update_exam(db: Session, exam_id: int, exam_data: ExamUpdate, current_user: User) -> Exam:
+    def update_exam(
+        db: Session, exam_id: int, exam_data: ExamUpdate, current_user: User
+    ) -> Exam:
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        # Verifica permissão (autor, revisor ou admin)
-        # REVISOR pode editar qualquer prova
-        # PROFESSOR só edita a própria
-        # ADMIN edita qualquer uma
         if current_user.role == UserRole.PROFESSOR:
             if exam.author_id != current_user.id:
                 raise ForbiddenException("PROFESSOR só pode editar suas próprias provas")
         elif current_user.role == UserRole.REVISOR:
-            # REVISOR pode editar qualquer prova
             pass
         elif current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Sem permissão para editar esta prova")
@@ -163,8 +159,7 @@ class ExamService:
         try:
             db.commit()
             db.refresh(exam)
-            
-            # Notifica autor se REVISOR/ADMIN editou
+
             if current_user.role in [UserRole.REVISOR, UserRole.ADMIN]:
                 if exam.author_id != current_user.id:
                     NotificationService.create_notification(
@@ -177,7 +172,6 @@ class ExamService:
                         entity_id=exam.id,
                         triggered_by_user_id=current_user.id
                     )
-            
             return exam
         except Exception as e:
             db.rollback()
@@ -193,22 +187,12 @@ class ExamService:
         header_size: float = 100.0,
         footer_size: float = 100.0,
     ) -> Exam:
-        """
-        Salva imagens de cabeçalho/rodapé em disco e atualiza a prova.
-        "" = restaurar padrão (apaga arquivo, limpa campo).
-        None = não alterar o campo.
-        """
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        # Verifica permissão (autor, revisor ou admin)
-        # REVISOR pode editar layout de qualquer prova
-        # PROFESSOR só edita suas próprias
-        # ADMIN edita qualquer uma
         if current_user.role == UserRole.PROFESSOR:
             if exam.author_id != current_user.id:
                 raise ForbiddenException("PROFESSOR só pode editar suas próprias provas")
         elif current_user.role == UserRole.REVISOR:
-            # REVISOR pode editar layout de qualquer prova
             pass
         elif current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Sem permissão para editar esta prova")
@@ -216,16 +200,13 @@ class ExamService:
         upload_root = Path(settings.UPLOAD_PATH)
 
         def _apagar(stored_path: Optional[str]) -> None:
-            """Remove arquivo de layout do disco com segurança."""
             if not stored_path:
                 return
             file_path = _path_to_file(upload_root, stored_path)
             if file_path.exists():
                 file_path.unlink()
-                logger.info(f"Layout removido do disco: {file_path}")
 
         def _salvar(b64_string: str, tipo: str, path_atual: Optional[str]) -> str:
-            """Decodifica base64, remove arquivo anterior e salva novo."""
             if "," in b64_string:
                 header_part, data_part = b64_string.split(",", 1)
                 ext = ".jpg" if ("jpeg" in header_part or "jpg" in header_part) else ".png"
@@ -240,7 +221,6 @@ class ExamService:
             if len(image_bytes) > 5 * 1024 * 1024:
                 raise ValidationException("Imagem do layout não pode exceder 5MB.")
 
-            # Remove arquivo anterior antes de criar o novo
             _apagar(path_atual)
 
             dest_dir = upload_root / "layouts" / tipo
@@ -254,7 +234,6 @@ class ExamService:
 
             return f"/uploads/layouts/{tipo}/{filename}"
 
-        # ── Cabeçalho ──────────────────────────────────────────────────────
         if header_image_b64 is not None:
             if header_image_b64 == "":
                 _apagar(exam.header_image)
@@ -262,7 +241,6 @@ class ExamService:
             else:
                 exam.header_image = _salvar(header_image_b64, "header", exam.header_image)
 
-        # ── Rodapé ─────────────────────────────────────────────────────────
         if footer_image_b64 is not None:
             if footer_image_b64 == "":
                 _apagar(exam.footer_image)
@@ -270,16 +248,13 @@ class ExamService:
             else:
                 exam.footer_image = _salvar(footer_image_b64, "footer", exam.footer_image)
 
-        # ── Tamanhos ────────────────────────────────────────────────────────
         exam.header_size = max(50.0, min(150.0, float(header_size)))
         exam.footer_size = max(50.0, min(150.0, float(footer_size)))
 
         try:
             db.commit()
             db.refresh(exam)
-            logger.info(f"Layout da prova {exam_id} atualizado por usuário {current_user.id}")
-            
-            # Notifica autor se REVISOR/ADMIN editou layout
+
             if current_user.role in [UserRole.REVISOR, UserRole.ADMIN]:
                 if exam.author_id != current_user.id:
                     NotificationService.create_notification(
@@ -292,7 +267,6 @@ class ExamService:
                         entity_id=exam.id,
                         triggered_by_user_id=current_user.id
                     )
-            
             return exam
         except Exception as e:
             db.rollback()
@@ -307,15 +281,10 @@ class ExamService:
     ) -> Exam:
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        # Verifica permissão (autor, revisor ou admin)
-        # REVISOR pode editar questões de qualquer prova
-        # PROFESSOR só edita suas próprias
-        # ADMIN edita qualquer uma
         if current_user.role == UserRole.PROFESSOR:
             if exam.author_id != current_user.id:
                 raise ForbiddenException("PROFESSOR só pode editar suas próprias provas")
         elif current_user.role == UserRole.REVISOR:
-            # REVISOR pode editar questões de qualquer prova
             pass
         elif current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Sem permissão para editar esta prova")
@@ -336,15 +305,13 @@ class ExamService:
                 ExamQuestion(exam_id=exam_id, question_id=qid, order_index=i + 1)
                 for i, qid in enumerate(questions_data.question_ids)
             ]
-
             if new_associations:
                 db.bulk_save_objects(new_associations)
 
             exam.total_questions = len(questions_data.question_ids)
             db.commit()
             db.refresh(exam)
-            
-            # Notifica autor se REVISOR/ADMIN editou questões
+
             if current_user.role in [UserRole.REVISOR, UserRole.ADMIN]:
                 if exam.author_id != current_user.id:
                     NotificationService.create_notification(
@@ -357,7 +324,6 @@ class ExamService:
                         entity_id=exam.id,
                         triggered_by_user_id=current_user.id
                     )
-            
             return exam
 
         except Exception as e:
@@ -367,18 +333,12 @@ class ExamService:
 
     @staticmethod
     def delete_exam(db: Session, exam_id: int, current_user: User) -> Exam:
-        """Remove prova e seus arquivos de layout."""
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        # Verifica permissão (autor, revisor ou admin)
-        # REVISOR pode deletar qualquer prova
-        # PROFESSOR só deleta suas próprias
-        # ADMIN deleta qualquer uma
         if current_user.role == UserRole.PROFESSOR:
             if exam.author_id != current_user.id:
                 raise ForbiddenException("PROFESSOR só pode deletar suas próprias provas")
         elif current_user.role == UserRole.REVISOR:
-            # REVISOR pode deletar qualquer prova
             pass
         elif current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Sem permissão para deletar esta prova")
@@ -404,22 +364,19 @@ class ExamService:
     ) -> Exam:
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        # Apenas ADMIN pode mudar status para APROVADA
         if new_status == ExamStatus.APROVADA and current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Apenas administradores podem aprovar provas")
 
-        # REVISOR pode mudar status de qualquer prova (exceto APROVADA)
-        # PROFESSOR só muda status de suas próprias provas
-        # ADMIN pode mudar status de qualquer prova
         if current_user.role == UserRole.PROFESSOR:
             if exam.author_id != current_user.id:
-                raise ForbiddenException("PROFESSOR só pode alterar status de suas próprias provas")
+                raise ForbiddenException(
+                    "PROFESSOR só pode alterar status de suas próprias provas"
+                )
 
         exam.status = new_status
         db.commit()
         db.refresh(exam)
-        
-        # Notifica autor se REVISOR/ADMIN mudou status
+
         if current_user.role in [UserRole.REVISOR, UserRole.ADMIN]:
             if exam.author_id != current_user.id:
                 NotificationService.create_notification(
@@ -432,20 +389,17 @@ class ExamService:
                     entity_id=exam.id,
                     triggered_by_user_id=current_user.id
                 )
-        
         return exam
 
     @staticmethod
     def get_exam_stats(db: Session, current_user: User) -> dict:
         query = db.query(Exam)
-
         if current_user.role == UserRole.PROFESSOR:
             query = query.filter(Exam.author_id == current_user.id)
 
         total_exams = query.count()
 
         stats_query = db.query(Exam.status, func.count(Exam.id))
-
         if current_user.role == UserRole.PROFESSOR:
             stats_query = stats_query.filter(Exam.author_id == current_user.id)
 

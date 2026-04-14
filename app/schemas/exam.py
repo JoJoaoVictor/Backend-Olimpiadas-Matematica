@@ -7,7 +7,6 @@ from app.schemas.question import QuestionResponse
 
 
 class ExamBase(BaseModel):
-    """Schema base para prova."""
     name: str = Field(..., min_length=1, max_length=200)
     fase: str = Field(..., min_length=1, max_length=50)
     anos: List[str] = Field(..., min_items=1)
@@ -29,8 +28,8 @@ class ExamBase(BaseModel):
                 raise ValueError(f"Ano '{ano}' não é válido. Use: {', '.join(valid_anos)}")
         return list(set(v))
 
+
 class ExamCreate(ExamBase):
-    """Schema para criação de prova."""
     question_ids: List[int] = Field(..., min_items=1, max_items=50)
 
     @validator("question_ids")
@@ -41,39 +40,20 @@ class ExamCreate(ExamBase):
 
 
 class ExamUpdate(BaseModel):
-    """Schema para atualização de prova."""
     name: Optional[str] = Field(None, min_length=5, max_length=200)
     fase: Optional[str] = Field(None, min_length=1, max_length=50)
     anos: Optional[List[str]] = Field(None, min_items=1)
     status: Optional[ExamStatus] = None
     description: Optional[str] = Field(None, max_length=1000)
     estimated_duration: Optional[int] = Field(None, gt=0, le=480)
-
-    # Campos de configuração visual do PDF
-    ano: Optional[int] = Field(
-        None, ge=2000, le=2100,
-        description="Ano da prova (ex: 2024)"
-    )
-    header_image: Optional[str] = Field(
-        None,
-        description="Imagem do cabeçalho em base64 (data:image/...;base64,...) ou null para usar o padrão"
-    )
-    footer_image: Optional[str] = Field(
-        None,
-        description="Imagem do rodapé em base64 (data:image/...;base64,...) ou null para usar o padrão"
-    )
-    header_size: Optional[float] = Field(
-        None, ge=50.0, le=150.0,
-        description="Tamanho do cabeçalho em % (50–150, padrão=100)"
-    )
-    footer_size: Optional[float] = Field(
-        None, ge=50.0, le=150.0,
-        description="Tamanho do rodapé em % (50–150, padrão=100)"
-    )
+    ano: Optional[int] = Field(None, ge=2000, le=2100)
+    header_image: Optional[str] = Field(None)
+    footer_image: Optional[str] = Field(None)
+    header_size: Optional[float] = Field(None, ge=50.0, le=150.0)
+    footer_size: Optional[float] = Field(None, ge=50.0, le=150.0)
 
 
 class ExamQuestionUpdate(BaseModel):
-    """Schema para atualizar questões da prova."""
     question_ids: List[int] = Field(..., min_items=1, max_items=50)
 
     @validator("question_ids")
@@ -84,23 +64,19 @@ class ExamQuestionUpdate(BaseModel):
 
 
 class ExamQuestionResponse(BaseModel):
-    """Schema para questão dentro de uma prova."""
     question: QuestionResponse
     order_index: int
-
     model_config = {"from_attributes": True}
 
 
 class ExamResponse(ExamBase, TimestampedSchema):
-    """Schema para resposta de prova."""
-    author: UserResponse
+    # author pode ser None se o usuário foi deletado (author_id = NULL)
+    author: Optional[UserResponse] = None
+    # author_name preserva o nome mesmo após deleção do autor
+    author_name: str = ""
     total_questions: int
     questions: List[ExamQuestionResponse] = []
-
-    # Ano da prova
     ano: Optional[int] = None
-
-    # Campos de configuração visual
     header_image: Optional[str] = None
     footer_image: Optional[str] = None
     header_size: float = 100.0
@@ -110,9 +86,6 @@ class ExamResponse(ExamBase, TimestampedSchema):
 
     @classmethod
     def from_orm(cls, obj):
-        """
-        Pydantic v2: mapeia exam_questions → questions antes da validação.
-        """
         if hasattr(obj, "exam_questions") and obj.exam_questions:
             obj.__dict__["questions"] = sorted(
                 obj.exam_questions,
@@ -120,12 +93,10 @@ class ExamResponse(ExamBase, TimestampedSchema):
             )
         else:
             obj.__dict__["questions"] = []
-
         return cls.model_validate(obj)
 
 
 class ExamListResponse(BaseModel):
-    """Schema para lista paginada de provas."""
     exams: List[ExamResponse]
     total: int
     page: int
@@ -134,7 +105,6 @@ class ExamListResponse(BaseModel):
 
 
 class ExamFilters(BaseModel):
-    """Schema para filtros de prova."""
     search: Optional[str] = Field(None, max_length=200)
     status: Optional[ExamStatus] = None
     fase: Optional[str] = Field(None, max_length=50)
@@ -145,7 +115,6 @@ class ExamFilters(BaseModel):
 
 
 class ExamPDFRequest(BaseModel):
-    """Schema para requisição de geração de PDF."""
     exam_id: Optional[int] = Field(default=None)
     questions: List[dict] = Field(default=[])
     fase: Optional[str] = Field(default="1ª FASE")
@@ -158,7 +127,6 @@ class ExamPDFRequest(BaseModel):
 
 
 class ExamHeaderInfo(BaseModel):
-    """Detalhes do cabeçalho da prova."""
     school_name: Optional[str] = Field("Nome da Escola")
     teacher_name: Optional[str] = Field(None)
     title: str = Field(...)
@@ -169,10 +137,10 @@ class ExamHeaderInfo(BaseModel):
 
 
 class ExamGenerateRequest(BaseModel):
-    """Payload para gerar PDF on-the-fly."""
     header_info: ExamHeaderInfo
     question_ids: List[int] = Field(..., min_items=1)
     include_answers: bool = Field(False)
+
 
 class ExamLayoutUpdate(BaseModel):
     header_image: Optional[str] = Field(default=None)
