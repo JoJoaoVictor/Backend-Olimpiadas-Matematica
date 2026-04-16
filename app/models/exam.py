@@ -32,6 +32,8 @@ class Exam(BaseModel):
     header_size  = Column(Float, default=100.0, nullable=False)
     footer_size  = Column(Float, default=100.0, nullable=False)
 
+    reviewer_comments = Column(Text, nullable=True)  # Comentários do revisor
+    
     # SET NULL: ao deletar o autor, author_id vira NULL mas a prova permanece.
     # O histórico é preservado pelo campo author_name abaixo.
     

@@ -151,7 +151,8 @@ class ExamService:
             pass
         elif current_user.role != UserRole.ADMIN:
             raise ForbiddenException("Sem permissão para editar esta prova")
-
+        old_comments = exam.reviewer_comments
+        
         update_data = exam_data.dict(exclude_unset=True)
         for field, value in update_data.items():
             setattr(exam, field, value)
@@ -172,6 +173,25 @@ class ExamService:
                         entity_id=exam.id,
                         triggered_by_user_id=current_user.id
                     )
+            # --- NOVO: ADICIONADO PARA COMENTÁRIOS DO REVISOR ---
+            # Notificação específica quando o campo 'reviewer_comments' é alterado
+            new_comments = exam.reviewer_comments
+            # Compara ignorando diferenças entre None e string vazia
+            comments_changed = (old_comments or "") != (new_comments or "")
+            if comments_changed and new_comments:
+                # Só notifica se o autor existe e não é o próprio usuário que fez a edição
+                if exam.author_id and exam.author_id != current_user.id:
+                    NotificationService.create_notification(
+                        db=db,
+                        user_id=exam.author_id,
+                        notification_type=NotificationType.EXAM_COMMENTED,
+                        title="Comentário do Revisor",
+                        message=f"{current_user.name} adicionou comentários na prova '{exam.name}'",
+                        entity_type=EntityType.EXAM,
+                        entity_id=exam.id,
+                        triggered_by_user_id=current_user.id
+                    )
+                    
             return exam
         except Exception as e:
             db.rollback()

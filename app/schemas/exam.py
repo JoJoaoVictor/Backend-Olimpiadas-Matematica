@@ -51,6 +51,7 @@ class ExamUpdate(BaseModel):
     footer_image: Optional[str] = Field(None)
     header_size: Optional[float] = Field(None, ge=50.0, le=150.0)
     footer_size: Optional[float] = Field(None, ge=50.0, le=150.0)
+    reviewer_comments: Optional[str] = Field(None, max_length=5000)
 
 
 class ExamQuestionUpdate(BaseModel):
@@ -81,6 +82,7 @@ class ExamResponse(ExamBase, TimestampedSchema):
     footer_image: Optional[str] = None
     header_size: float = 100.0
     footer_size: float = 100.0
+    reviewer_comments: Optional[str] = None 
 
     model_config = {"from_attributes": True}
 
