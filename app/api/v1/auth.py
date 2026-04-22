@@ -97,6 +97,15 @@ async def login_user(
 # =========================
 # LOGIN COM GOOGLE (JWT)
 # =========================
+@router.options("/google")
+async def options_google():
+    """Responde ao preflight CORS para a rota Google OAuth."""
+    return {"message": "OK"}
+@router.options("/google")
+async def options_google():
+    """Responde ao preflight CORS para o endpoint Google OAuth."""
+    return {"message": "OK"}
+
 @router.post("/google")
 async def login_with_google(payload: dict, db: Session = Depends(get_db)):
     credential = payload.get("credential")

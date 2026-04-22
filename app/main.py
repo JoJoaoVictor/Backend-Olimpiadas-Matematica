@@ -138,7 +138,7 @@ origins = [
 # Adiciona o middleware de CORS para permitir requisições das origens listadas
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

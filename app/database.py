@@ -1,11 +1,10 @@
 from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import StaticPool
-Base = declarative_base()
 from app.core.config import settings
- 
-# Engine do SQLAlchemy
+
+Base = declarative_base()
+
 if settings.DATABASE_URL.startswith("sqlite"):
     engine = create_engine(
         settings.DATABASE_URL,
@@ -16,20 +15,15 @@ if settings.DATABASE_URL.startswith("sqlite"):
 else:
     engine = create_engine(
         settings.DATABASE_URL,
-        pool_pre_ping=True,
-        pool_recycle=300,
-        echo=settings.DEBUG,
+        pool_size=10,           # conexões simultâneas (conforme guia)
+        max_overflow=20,        # conexões extras (conforme guia)
+        pool_pre_ping=True,     # verifica conexão antes de usar
+        echo=settings.ENVIRONMENT == "development"   # log SQL só em dev
     )
 
-# Session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Base class para models
-Base = declarative_base()
- 
-
 def get_db():
-    """Dependency para obter sessão do banco."""
     db = SessionLocal()
     try:
         yield db
