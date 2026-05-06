@@ -47,7 +47,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # Suporte a arquivos estáticos (CSS, JS, Imagens)
-from fastapi.staticfiles import StaticFiles 
+from fastapi.staticfiles import StaticFiles
 
 # Exceção base HTTP do Starlette para tratamento de erros
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -60,7 +60,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.core.config import settings
 
 # Importa o motor de banco de dados e a base declarativa do SQLAlchemy
-from app.database import engine, Base 
+from app.database import engine, Base
 
 # --------------------------------------------------------------------------------
 # Importação das rotas da API
@@ -91,7 +91,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Código executado quando a aplicação inicia
     logger.info("🚀 Iniciando aplicação FastAPI")
-    
+
     # Verifica e cria as tabelas do banco de dados apenas se estiver em ambiente de desenvolvimento
     if settings.is_development:
         try:
@@ -100,10 +100,10 @@ async def lifespan(app: FastAPI):
             logger.info("✅ Tabelas sincronizadas.")
         except Exception as e:
             logger.error(f"❌ Erro ao criar tabelas: {e}")
-    
+
     # Pausa a execução aqui enquanto a aplicação estiver rodando (yield)
-    yield 
-    
+    yield
+
     # Código executado quando a aplicação é encerrada
     logger.info("👋 Encerrando aplicação")
 
@@ -155,10 +155,10 @@ os.makedirs("uploads/images", exist_ok=True)
 # app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Serve arquivos de upload
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_PATH), name="uploads")
 
 # Configuração para servir arquivos estáticos (atualmente desativada/comentada)
-# os.makedirs("static/images", exist_ok=True) 
+# os.makedirs("static/images", exist_ok=True)
 # app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --------------------------------------------------------------------------------
@@ -198,8 +198,8 @@ async def general_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={
-            "success": False, 
-            "message": "Erro interno do servidor", 
+            "success": False,
+            "message": "Erro interno do servidor",
             "detail": str(exc) if settings.is_development else "Contate o suporte."
         }
     )
@@ -252,7 +252,7 @@ app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["
 # Este bloco só executa se você rodar "python app/main.py"
 if __name__ == "__main__":
     import uvicorn
-    
+
     # Reforça a política de eventos caso o bloco superior não tenha surtido efeito
     if sys.platform.startswith("win"):
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())

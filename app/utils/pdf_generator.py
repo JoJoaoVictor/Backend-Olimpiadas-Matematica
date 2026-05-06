@@ -1,13 +1,6 @@
 """
 Gerador de PDF Otimizado com Playwright + MathJax SVG
-RESOLVE: Sobrecarga de memória ao processar LaTeX e imagens no browser
-
-FUNCIONALIDADES:
-1. Renderiza LaTeX via MathJax (sem canvas)
-2. Suporta imagens das questões (base64, URL, file_path)
-3. Layout em 2 colunas com quebras inteligentes
-4. Duas versões: SEM e COM resoluções
-5. Cabeçalho/Rodapé institucional UNEMAT (customizável por prova)
+...
 """
 from app.core.config import settings
 import io
@@ -19,7 +12,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from playwright.sync_api import sync_playwright
 from app.utils.playwright_manager import PlaywrightManager
 
 logger = logging.getLogger(__name__)
@@ -35,7 +27,7 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _remove_blank_pages(pdf_bytes: bytes) -> bytes:
-        """Remove páginas em branco do PDF gerado."""
+        # ... mantenha como está ...
         if PdfReader is None or PdfWriter is None:
             return pdf_bytes
         try:
@@ -58,14 +50,13 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _get_field(obj: Any, field_name: str, default: Any = None) -> Any:
-        """Acessa campos de forma segura (dict ou objeto)."""
         if isinstance(obj, dict):
             return obj.get(field_name, default)
         return getattr(obj, field_name, default)
 
     @staticmethod
     def _sanitize_latex(text: str) -> str:
-        """Normaliza strings LaTeX do banco."""
+        # ... mantenha como está ...
         if not text:
             return ""
         if text.startswith('\ufeff'):
@@ -103,7 +94,7 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _load_static_img_base64(filename: str) -> str:
-        """Carrega imagens estáticas (header/footer padrão) em base64."""
+        # ... mantenha como está ...
         try:
             base_path = Path(__file__).resolve().parent.parent.parent / "static" / "img" / filename
             if base_path.exists():
@@ -115,10 +106,8 @@ class AdvancedPDFGenerator:
             return ""
 
     @staticmethod
-    def _resolve_image(
-        custom_value: Optional[str],
-        default_filename: str
-    ) -> str:
+    def _resolve_image(custom_value: Optional[str], default_filename: str) -> str:
+        # ... mantenha como está ...
         if custom_value:
             if custom_value.startswith("data:"):
                 return custom_value
@@ -130,20 +119,29 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _get_image_source_for_question(q: Any) -> Optional[str]:
-        base_url = getattr(settings, 'API_BASE_URL', 'http://localhost:8000')
+        """
+        Extrai a URL da imagem da questão, compatível com objetos ORM, dicts
+        e o formato retornado por PDFService._extract_image_from_sqlalchemy.
+        """
+        base_url = getattr(settings, 'API_BASE_URL', 'http://127.0.0.1').rstrip('/')
         if base_url.endswith('/'):
             base_url = base_url[:-1]
 
         src = None
+        # 1. Campo 'image' (objeto ORM ou dict retornado pelo PDFService)
         image_field = AdvancedPDFGenerator._get_field(q, "image")
         if image_field is not None:
+            # Objeto ORM com atributo 'url'
             if hasattr(image_field, 'url') and image_field.url:
                 src = image_field.url
+            # Dict com chave 'url' (formato do PDFService)
             elif isinstance(image_field, dict) and 'url' in image_field:
                 src = image_field['url']
+            # String pura (caminho relativo) – mantido por compatibilidade
             elif isinstance(image_field, str):
                 src = image_field
 
+        # 2. Campo 'images' (lista legada)
         if src is None:
             images_field = AdvancedPDFGenerator._get_field(q, "images")
             if images_field:
@@ -156,13 +154,19 @@ class AdvancedPDFGenerator:
                 elif isinstance(images_field, dict):
                     src = images_field.get('src')
 
+        # 3. Garante que caminho relativo vire URL absoluta
         if src and isinstance(src, str) and src.startswith('/uploads/'):
             src = base_url + src
+
+        # Log temporário
+        q_id = AdvancedPDFGenerator._get_field(q, "id")
+        logger.info(f"🐞 DEBUG IMAGE: question_id={q_id}, image_source_result={src}")
 
         return src
 
     @staticmethod
     def _get_image_class_for_question(q: Any) -> str:
+        # ... mantenha como está, sem alterações ...
         role = AdvancedPDFGenerator._get_field(q, "image_role")
         if role and isinstance(role, str):
             role = role.upper()
@@ -178,29 +182,24 @@ class AdvancedPDFGenerator:
                 first = images_field[0]
                 if isinstance(first, dict):
                     role = first.get('role', 'MEDIUM').upper()
-                    if role == 'SMALL':
-                        return 'question-img-small'
-                    if role == 'LARGE':
-                        return 'question-img-large'
+                    if role == 'SMALL': return 'question-img-small'
+                    if role == 'LARGE': return 'question-img-large'
             elif isinstance(images_field, dict):
                 role = images_field.get('role', 'MEDIUM').upper()
-                if role == 'SMALL':
-                    return 'question-img-small'
-                if role == 'LARGE':
-                    return 'question-img-large'
+                if role == 'SMALL': return 'question-img-small'
+                if role == 'LARGE': return 'question-img-large'
 
         image_field = AdvancedPDFGenerator._get_field(q, "image")
         if isinstance(image_field, dict):
             role = image_field.get('role', 'MEDIUM').upper()
-            if role == 'SMALL':
-                return 'question-img-small'
-            if role == 'LARGE':
-                return 'question-img-large'
+            if role == 'SMALL': return 'question-img-small'
+            if role == 'LARGE': return 'question-img-large'
 
         return 'question-img-medium'
 
     @staticmethod
     def _get_image_style_attributes(q: Any) -> str:
+        # ... mantenha como está ...
         images_field = AdvancedPDFGenerator._get_field(q, "images")
         if images_field:
             if isinstance(images_field, list) and len(images_field) > 0:
@@ -214,34 +213,18 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _build_exam_title(fase: str, anos: List[str], year: int = None) -> str:
-        """
-        Constrói o título da prova no padrão:
-          OLIMPÍADA DE MATEMÁTICA DA UNEMAT – 2024 – 3ª FASE – ENSINO MÉDIO
-          OLIMPÍADA DE MATEMÁTICA DA UNEMAT – 2024 – 3ª FASE – 4° e 5° Anos
-
-        Fase:
-          "1" → "1ª FASE"  |  "2" → "2ª FASE"  |  "3" → "3ª FASE"
-          "Final" → "FINAL"  |  "1ª fase" → "1ª FASE"
-
-        Anos (baseado nos labels do react-select):
-          Contém "Médio"       → "ENSINO MÉDIO"
-          Contém "Fundamental" → extrai número → "4° e 5° Anos"
-          Só números (ex: "4º") → "4° Ano"
-        """
+        # ... mantenha como está, sem alterações ...
         if year is None:
             year = datetime.now().year
 
-        # ── Formata fase ──────────────────────────────────────────────────────
         fase_str = str(fase).strip() if fase else ""
         sufixos = {"1": "1ª", "2": "2ª", "3": "3ª"}
 
         if not fase_str or fase_str.lower() in ("none", ""):
             fase_texto = "1ª FASE"
         elif re.match(r"^\d+$", fase_str):
-            # Número puro: "1" → "1ª FASE"
             fase_texto = f"{sufixos.get(fase_str, fase_str + 'ª')} FASE"
         elif re.match(r"^\d+[ªa°]?\s*fase$", fase_str, re.IGNORECASE):
-            # "1ª fase", "2a fase" → normaliza
             num = re.search(r"\d+", fase_str).group()
             fase_texto = f"{sufixos.get(num, num + 'ª')} FASE"
         elif "final" in fase_str.lower():
@@ -249,8 +232,6 @@ class AdvancedPDFGenerator:
         else:
             fase_texto = fase_str.upper()
 
-        # ── Formata anos ──────────────────────────────────────────────────────
-        # Normaliza para lista de strings
         if isinstance(anos, list):
             anos_lista = [str(a).strip() for a in anos if a and str(a).strip()]
         elif isinstance(anos, str) and anos.strip():
@@ -258,20 +239,13 @@ class AdvancedPDFGenerator:
         else:
             anos_lista = []
 
-        logger.info(f"_build_exam_title: fase_str={repr(fase_str)} fase_texto={repr(fase_texto)} anos_lista={repr(anos_lista)}")
+        logger.info(f"_build_exam_title: fase_str={fase_str!r} fase_texto={fase_texto!r} anos_lista={anos_lista!r}")
 
         if not anos_lista:
             anos_texto = "Anos Diversos"
         else:
-            # Detecta Ensino Médio:
-            #   labels: "1º Médio", "2º Médio", "3º Médio"
-            #   values: "1º", "2º", "3º" quando acompanhados de contexto médio
-            # Regra: item com "Médio"/"Medio" OU value numérico puro <= 3 sem "Fundamental"
             tem_medio       = any("médio" in a.lower() or "medio" in a.lower() for a in anos_lista)
             tem_fundamental = any("fundamental" in a.lower() for a in anos_lista)
-
-            # Se nenhum label explicita "Fundamental" ou "Médio",
-            # usa os números para inferir: 1-3 = médio, 4-9 = fundamental
             if not tem_medio and not tem_fundamental:
                 numeros_raw = []
                 for a in anos_lista:
@@ -281,23 +255,17 @@ class AdvancedPDFGenerator:
                 if numeros_raw:
                     todos_medio      = all(n <= 3 for n in numeros_raw)
                     todos_fundamental = all(n >= 4 for n in numeros_raw)
-                    if todos_medio:
-                        tem_medio = True
-                    elif todos_fundamental:
-                        tem_fundamental = True
-
+                    if todos_medio: tem_medio = True
+                    elif todos_fundamental: tem_fundamental = True
             if tem_medio and not tem_fundamental:
                 anos_texto = "ENSINO MÉDIO"
             else:
-                # Extrai apenas o primeiro número de cada item
                 numeros = []
                 for a in anos_lista:
                     ns = re.findall(r"\d+", a)
                     if ns:
                         numeros.append(ns[0])
-
                 numeros_unicos = sorted(set(numeros), key=lambda x: int(x))
-
                 if not numeros_unicos:
                     anos_texto = "Anos Diversos"
                 elif len(numeros_unicos) == 1:
@@ -312,6 +280,7 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _parse_alternatives(question: Any) -> Dict[str, str]:
+        # ... mantenha como está ...
         alt_raw = AdvancedPDFGenerator._get_field(question, "alternatives")
         if isinstance(alt_raw, dict):
             return {k: str(v).strip() if v else "" for k, v in alt_raw.items()}
@@ -330,10 +299,8 @@ class AdvancedPDFGenerator:
                     try:
                         parsed = json.loads(loaded)
                         return {k: str(v).strip() if v else "" for k, v in parsed.items()}
-                    except:
-                        pass
-            except:
-                pass
+                    except: pass
+            except: pass
             lines = alt_raw.split('\n')
             alt_dict = {}
             for line in lines:
@@ -352,21 +319,18 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _extract_correct_letter(correct_alternative: str) -> str:
-        if not correct_alternative:
-            return ""
+        if not correct_alternative: return ""
         text = correct_alternative.strip()
-        if not text:
-            return ""
+        if not text: return ""
         letter = text.upper()
-        if letter in "ABCDE":
-            return letter
+        if letter in "ABCDE": return letter
         for char in text:
-            if char.upper() in "ABCDE":
-                return char.upper()
+            if char.upper() in "ABCDE": return char.upper()
         return ""
 
     @staticmethod
     def _render_questions_html(questions: List[Any], include_resolution: bool = False) -> str:
+        # ... mantenha como está ...
         html_parts = []
         for i, q in enumerate(questions, 1):
             raw_stmt = (
@@ -432,8 +396,11 @@ class AdvancedPDFGenerator:
             """)
         return "\n".join(html_parts)
 
+    # ════════════════════════════════════════════════════════════════
+    # Funções principais de geração (corrigida a indentação!)
+    # ════════════════════════════════════════════════════════════════
     @staticmethod
-    def create_exam_pdf(
+    async def create_exam_pdf(
         exam: Any,
         questions: List[Any],
         options: Dict[str, Any] = None
@@ -462,6 +429,16 @@ class AdvancedPDFGenerator:
         header_width_mm = round(200 * header_size / 100, 1)
         footer_width_mm = round(160 * footer_size / 100, 1)
 
+        # Log temporário para depuração
+        for idx, q in enumerate(questions):
+            img = q.get('image') if isinstance(q, dict) else getattr(q, 'image', None)
+            url = None
+            if isinstance(img, dict):
+                url = img.get('url')
+            elif hasattr(img, 'url'):
+                url = img.url
+            logger.info(f"🐞 PDF GEN Q{idx} id={q.get('id') if isinstance(q, dict) else getattr(q, 'id', '?')} image_url={url}")
+
         questions_sem_resolucao = AdvancedPDFGenerator._render_questions_html(questions, False)
         questions_com_resolucao = AdvancedPDFGenerator._render_questions_html(questions, True)
 
@@ -474,9 +451,9 @@ class AdvancedPDFGenerator:
             <script>
                 window.MathJax = {{
                     loader: {{ load: ['output/svg'] }},
-                    tex: {{ 
-                        inlineMath: [['$', '$'], ['\\\\(', '\\\\)']], 
-                        displayMath: [['$$', '$$']] 
+                    tex: {{
+                        inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+                        displayMath: [['$$', '$$']]
                     }},
                     svg: {{ fontCache: 'global' }},
                     startup: {{ typeset: false }}
@@ -544,21 +521,21 @@ class AdvancedPDFGenerator:
         """
 
         buffer = io.BytesIO()
-        browser = PlaywrightManager.get_browser()
+        browser = await PlaywrightManager.get_browser()
         page = None
 
         try:
-            page = browser.new_page()
-            page.set_content(html_content, wait_until="domcontentloaded", timeout=60000)
+            page = await browser.new_page()
+            await page.set_content(html_content, wait_until="domcontentloaded", timeout=60000)
             try:
-                page.wait_for_function(
+                await page.wait_for_function(
                     "MathJax.typesetPromise ? MathJax.typesetPromise().then(() => true) : true",
                     timeout=15000
                 )
             except Exception:
                 logger.warning("MathJax não respondeu, continuando...")
 
-            pdf_bytes = page.pdf(
+            pdf_bytes = await page.pdf(
                 format="A4",
                 print_background=True,
                 prefer_css_page_size=True,
@@ -576,16 +553,17 @@ class AdvancedPDFGenerator:
             raise
         finally:
             if page:
-                page.close()
+                await page.close()
 
-        @staticmethod
-        def create_question_bank_pdf(questions: List[Any], options: Dict[str, Any] = None) -> io.BytesIO:
-            fake_exam = {"fase": "Banco de Questões", "anos": ["Todos"], "ano": 2024}
-            return AdvancedPDFGenerator.create_exam_pdf(fake_exam, questions, options)
+    # Métodos auxiliares com indentação CORRETA
+    @staticmethod
+    async def create_question_bank_pdf(questions: List[Any], options: Dict[str, Any] = None) -> io.BytesIO:
+        fake_exam = {"fase": "Banco de Questões", "anos": ["Todos"], "ano": datetime.now().year}
+        return await AdvancedPDFGenerator.create_exam_pdf(fake_exam, questions, options)
 
-        @staticmethod
-        def create_statistical_report(data: Dict[str, Any], options: Dict[str, Any] = None) -> io.BytesIO:
-            buffer = io.BytesIO()
-            buffer.write(b"%PDF-1.4 (Report in development)")
-            buffer.seek(0)
-            return buffer
+    @staticmethod
+    async def create_statistical_report(data: Dict[str, Any], options: Dict[str, Any] = None) -> io.BytesIO:
+        buffer = io.BytesIO()
+        buffer.write(b"%PDF-1.4 (Report in development)")
+        buffer.seek(0)
+        return buffer

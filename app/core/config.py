@@ -1,9 +1,14 @@
 # app/core/config.py
+import os
 from functools import lru_cache
 from typing import List, Optional
 
 from pydantic import field_validator, ValidationInfo
 from pydantic_settings import BaseSettings
+
+# Descobre automaticamente a raiz do projeto dinamicamente
+# (Voltando 3 pastas a partir deste arquivo: config.py -> core -> app -> raiz)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 class Settings(BaseSettings):
     """
@@ -55,8 +60,11 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------------
     MAX_FILE_SIZE: int = 10485760
     ALLOWED_IMAGE_EXTENSIONS: List[str] = ["jpg", "jpeg", "png", "gif", "svg"]
-    UPLOAD_PATH: str = "./uploads"
-    STATIC_PATH: str = "./static"
+    
+    # AQUI ESTÁ A MÁGICA: Se existir UPLOAD_PATH no .env (servidor), ele usa. 
+    # Se não (sua máquina local), ele aponta para a pasta real do projeto.
+    UPLOAD_PATH: str = os.getenv("UPLOAD_PATH", "./uploads")
+    STATIC_PATH: str = os.getenv("STATIC_PATH", os.path.join(BASE_DIR, "static"))
 
     STATIC_URL: str = "/static"
     UPLOAD_URL: str = "/uploads"
@@ -65,7 +73,7 @@ class Settings(BaseSettings):
     # REDIS & EMAIL
     # ------------------------------------------------------------------------
     REDIS_URL: str = "redis://localhost:6379/0"
-
+    API_BASE_URL: str = "http://localhost:8000"
     MAIL_USERNAME: str = ""
     MAIL_PASSWORD: str = ""
     MAIL_FROM: str = ""

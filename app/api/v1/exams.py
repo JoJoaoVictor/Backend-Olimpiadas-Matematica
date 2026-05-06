@@ -1,4 +1,5 @@
 """Rotas de provas."""
+from sqlalchemy.orm import joinedload
 import logging
 from typing import List, Optional
 from io import BytesIO
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import (
-    get_current_user, 
+    get_current_user,
     get_professor_user,
     get_professor_or_revisor_user,
     get_admin_user
@@ -325,6 +326,11 @@ async def generate_exam_pdf(
     try:
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
+        # Força o carregamento antecipado da imagem de cada questão
+        for eq in exam.exam_questions:
+            if eq.question:
+                _ = eq.question.image
+
         questions = [
             eq.question
             for eq in sorted(exam.exam_questions, key=lambda x: x.order_index)
@@ -370,20 +376,4 @@ async def generate_exam_pdf(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Erro interno na geração do PDF."
-        )
-
-
-@router.get("/stats/summary", response_model=dict)
-async def get_exam_stats(
-    current_user: User = Depends(get_professor_user),
-    db: Session = Depends(get_db)
-):
-    try:
-        stats = ExamService.get_exam_stats(db, current_user)
-        return {"success": True, "data": {"stats": stats}}
-    except Exception as e:
-        logger.error(f"Erro ao buscar estatísticas: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Erro ao obter estatísticas"
         )
