@@ -5,8 +5,9 @@ Arquivo: app/api/v1/users.py
 from sqlalchemy.exc import IntegrityError
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
+from app.models.user_profile import UserProfile
 
 # --- DEPENDÊNCIAS E UTILS ---
 from app.database import get_db
@@ -31,44 +32,66 @@ router = APIRouter()
 # ==============================================================================
 
 @router.get("/me", response_model=dict)
-async def read_users_me(current_user: User = Depends(get_current_active_user)):
+async def read_users_me(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
     """
-    Retorna os dados do usuário logado atualmente.
+    Retorna os dados do usuário logado atualmente com o perfil carregado.
     """
+    # Força o carregamento do relacionamento 'profile' para evitar o erro 422 no Pydantic
+    user_with_profile = (
+        db.query(User)
+        .options(joinedload(User.profile))
+        .filter(User.id == current_user.id)
+        .first()
+    )
+    
     return {
         "success": True,
-        "data": UserResponse.from_orm(current_user)
+        "data": UserResponse.from_orm(user_with_profile or current_user)
     }
 
 @router.put("/me", response_model=dict)
 async def update_user_me(
-    user_data: UserUpdateProfile,
+    user_data: dict,   # aceita qualquer JSON, validamos manualmente
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Atualiza dados básicos do próprio usuário (Nome e Avatar).
-    """
-    try:
-        if user_data.name:
-            current_user.name = user_data.name
-        if user_data.avatar_url:
-            current_user.avatar_url = user_data.avatar_url
-        
-        db.commit()
-        db.refresh(current_user)
-        
-        return {
-            "success": True,
-            "message": "Perfil atualizado com sucesso",
-            "data": UserResponse.from_orm(current_user)
-        }
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, 
-            detail=f"Erro ao atualizar perfil: {str(e)}"
-        )
+    """Atualiza dados básicos (nome, avatar) e dados do perfil académico."""
+    # ── Dados básicos ──────────────────────────────────────
+    if "name" in user_data and user_data["name"] is not None:
+        current_user.name = user_data["name"]
+    if "avatar_url" in user_data and user_data["avatar_url"] is not None:
+        current_user.avatar_url = user_data["avatar_url"]
+
+    # ── Dados do perfil (se enviados) ─────────────────────
+    profile_data = user_data.get("profile")
+    if profile_data:
+        if not current_user.profile:
+            current_user.profile = UserProfile(user_id=current_user.id)
+            db.add(current_user.profile)
+
+        # Atualiza os campos dinamicamente pegando do profile_data (dicionário)
+        for field in ["telefone", "campus", "cidade", "matricula", "curso", "cpf"]:
+            if field in profile_data and profile_data[field] is not None:
+                setattr(current_user.profile, field, profile_data[field])
+
+    db.commit()
+    
+    # Recarrega o objeto garantindo que o relacionamento profile venha junto na resposta
+    user_updated = (
+        db.query(User)
+        .options(joinedload(User.profile))
+        .filter(User.id == current_user.id)
+        .first()
+    )
+
+    return {
+        "success": True,
+        "message": "Perfil updated com sucesso",
+        "data": UserResponse.from_orm(user_updated)
+    }
 
 @router.post("/change-password", response_model=dict)
 async def change_password(
@@ -76,16 +99,11 @@ async def change_password(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """
-    Permite que o usuário logado altere sua própria senha.
-    CORRIGIDO: Usa 'password_hash' para corresponder ao Model do SQLAlchemy.
-    """
+    """Permite que o usuário logado altere sua própria senha."""
     
-    # 1. Verifica se o usuário tem senha (usuários Google podem não ter)
-    # E verifica se a senha atual informada bate com o hash no banco
     if current_user.password_hash:
         if not password_data.current_password:
-             raise HTTPException(
+            raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, 
                 detail="Por favor, informe sua senha atual."
             )
@@ -96,17 +114,15 @@ async def change_password(
                 detail="A senha atual está incorreta."
             )
         
-        # 2. Verifica se a nova senha é igual à antiga
         if password_data.current_password == password_data.new_password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, 
                 detail="A nova senha deve ser diferente da atual."
             )
 
-    # 3. Criptografa e salva a nova senha no campo CORRETO
     current_user.password_hash = get_password_hash(password_data.new_password)
     
-    db.add(current_user) # Garante que o SQLAlchemy rastreie a mudança
+    db.add(current_user)
     db.commit()
     db.refresh(current_user)
     
@@ -131,7 +147,8 @@ async def list_users(
 ):
     """Lista usuários com paginação e filtros (Apenas Admin)."""
     
-    query = db.query(User)
+    # Adicionado joinedload para listar os usuários com seus respectivos perfis sem dar erro 422
+    query = db.query(User).options(joinedload(User.profile))
 
     # Filtros
     if search:
@@ -172,23 +189,25 @@ async def create_user(
         raise HTTPException(status_code=400, detail="Este email já está cadastrado.")
 
     # Cria objeto User
-    # CORRIGIDO: hashed_password -> password_hash no construtor
     new_user = User(
         email=user_data.email,
         name=user_data.name,
-        password_hash=get_password_hash(user_data.password), # <--- CORREÇÃO AQUI
+        password_hash=get_password_hash(user_data.password),
         role=user_data.role or UserRole.STUDENT,
         is_active=True
     )
     
     db.add(new_user)
     db.commit()
+    
+    # Recarrega com o perfil vazio associado para evitar erros de validação
     db.refresh(new_user)
+    user_with_profile = db.query(User).options(joinedload(User.profile)).filter(User.id == new_user.id).first()
     
     return {
         "success": True,
         "message": "Usuário criado com sucesso",
-        "data": {"user": UserResponse.from_orm(new_user)}
+        "data": {"user": UserResponse.from_orm(user_with_profile or new_user)}
     }
 
 
@@ -224,7 +243,7 @@ async def get_user(
     db: Session = Depends(get_db)
 ):
     """Busca usuário por ID."""
-    user = db.query(User).filter(User.id == user_id).first()
+    user = db.query(User).options(joinedload(User.profile)).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
         
@@ -262,12 +281,13 @@ async def update_user(
         user.role = user_data.role
 
     db.commit()
-    db.refresh(user)
+    
+    user_updated = db.query(User).options(joinedload(User.profile)).filter(User.id == user_id).first()
 
     return {
         "success": True,
         "message": "Usuário atualizado com sucesso",
-        "data": {"user": UserResponse.from_orm(user)}
+        "data": {"user": UserResponse.from_orm(user_updated)}
     }
 
 
@@ -285,12 +305,13 @@ async def change_user_role(
     
     user.role = role_data.role
     db.commit()
-    db.refresh(user)
+    
+    user_updated = db.query(User).options(joinedload(User.profile)).filter(User.id == user_id).first()
     
     return {
         "success": True,
         "message": "Cargo atualizado com sucesso",
-        "data": {"user": UserResponse.from_orm(user)}
+        "data": {"user": UserResponse.from_orm(user_updated)}
     }
 
 

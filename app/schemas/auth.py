@@ -1,6 +1,6 @@
 """
 Schemas de autenticação da aplicação.
-
+Arquivo: app/schemas/auth.py
 Responsável por validar e estruturar:
 - Registro de usuário
 - Login
@@ -44,10 +44,33 @@ class UserRegister(BaseModel, PasswordValidatorMixin):
     """
     Schema para registro de usuário.
     """
-    name: str = Field(..., min_length=2, max_length=100, description="Nome completo")
-    email: EmailStr = Field(..., description="Email válido")
-    password: str = Field(..., min_length=8, max_length=100, description="Senha forte")
-    role: Optional[UserRole] = Field(default=UserRole.STUDENT, description="Perfil do usuário")
+    # ── Campos originais ──────────────────────────────────────────────────────
+    name:     str           = Field(..., min_length=2, max_length=100, description="Nome completo")
+    email:    EmailStr      = Field(..., description="Email válido")
+    password: str           = Field(..., min_length=8, max_length=100, description="Senha forte")
+    role:     Optional[UserRole] = Field(default=UserRole.STUDENT, description="Perfil do usuário")
+
+    # ── Campos do perfil acadêmico  ────────────────────────────────────
+    # Todos opcionais no schema: a obrigatoriedade é tratada no frontend,
+    # garantindo que cadastros via Google OAuth ou admin não quebrem.
+
+    # CPF armazenado APENAS com dígitos (11 chars) — a máscara é removida no frontend
+    cpf:       Optional[str] = Field(default=None, min_length=11, max_length=11, description="CPF (somente dígitos)")
+
+    # Telefone armazenado APENAS com dígitos (10 ou 11 chars)
+    telefone:  Optional[str] = Field(default=None, max_length=11, description="Telefone (somente dígitos)")
+
+    # Valor do enum do frontend, ex: "SINOP", "CACERES", "ALTA_FLORESTA"
+    campus:    Optional[str] = Field(default=None, max_length=50,  description="Campus / Polo UNEMAT")
+
+    # Preenchida automaticamente no frontend com base no campus selecionado
+    cidade:    Optional[str] = Field(default=None, max_length=100, description="Cidade do campus")
+
+    # Matrícula do aluno ou nº funcional do professor
+    matricula: Optional[str] = Field(default=None, max_length=30,  description="Matrícula / Nº funcional")
+
+    # Curso — enviado apenas quando role == STUDENT
+    curso:     Optional[str] = Field(default=None, max_length=100, description="Curso de graduação")
 
 # =====================================================
 # LOGIN
@@ -118,6 +141,17 @@ class AuthData(BaseModel):
     user: Optional[UserSchema] = None
     tokens: Optional[TokenResponse] = None
 
+class UserProfileSchema(BaseModel):
+    cpf: Optional[str] = None
+    telefone: Optional[str] = None
+    campus: Optional[str] = None
+    cidade: Optional[str] = None
+    matricula: Optional[str] = None
+    curso: Optional[str] = None
+    class Config:
+        from_attributes = True
+
+
 class UserResponse(BaseModel):
     """
     Envelope padrão de resposta da API de Autenticação.
@@ -125,3 +159,6 @@ class UserResponse(BaseModel):
     success: bool
     message: Optional[str] = None
     data: Optional[AuthData] = None
+    profile: Optional[UserProfileSchema] = None
+    class Config:
+        from_attributes = True

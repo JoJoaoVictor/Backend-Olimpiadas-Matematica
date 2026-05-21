@@ -20,6 +20,7 @@ from google.auth.transport import requests
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
+from app.models.user_profile import UserProfile       
 from app.services.auth_service import AuthService
 from app.core.exceptions import AppException
 from app.core.config import settings
@@ -46,9 +47,25 @@ async def register_user(
     user_data: UserRegister,
     db: Session = Depends(get_db),
 ):
-    """Registra novo usuário e faz login automático."""
+    """Registra novo usuário, cria perfil acadêmico e faz login automático."""
     try:
         user = AuthService.register_user(db, user_data)
+
+        # ── Cria o perfil acadêmico vinculado ao usuário ──────────────
+        # Os campos novos chegam via UserRegister (ver auth_schema_patch.py)
+        profile = UserProfile(
+            user_id   = user.id,
+            cpf       = user_data.cpf       or None,
+            telefone  = user_data.telefone  or None,
+            campus    = user_data.campus    or None,
+            cidade    = user_data.cidade    or None,
+            matricula = user_data.matricula or None,
+            curso     = user_data.curso     or None,
+        )
+        db.add(profile)
+        db.commit()
+        db.refresh(user)
+        # ─────────────────────────────────────────────────────────────
 
         # Login automático após registro
         _, tokens = AuthService.authenticate_user(

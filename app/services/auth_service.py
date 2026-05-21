@@ -243,7 +243,7 @@ class AuthService:
             "access_token": create_access_token(user.id),
             "refresh_token": create_refresh_token(user.id),
             "token_type": "bearer",
-            "expires_in": 15 * 60,  # 15 minutos
+            "expires_in": 50 * 60,  # 50 minutos
             "user": {
                 "id": user.id,
                 "name": user.name,

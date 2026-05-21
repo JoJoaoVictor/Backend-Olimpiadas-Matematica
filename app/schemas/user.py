@@ -7,6 +7,25 @@ from pydantic import BaseModel, EmailStr, Field
 from app.models.user import UserRole
 from app.schemas.base import TimestampedSchema
 
+class ProfileUpdate(BaseModel):
+    telefone: Optional[str] = None
+    campus: Optional[str] = None
+    matricula: Optional[str] = None
+    curso: Optional[str] = None
+    cpf: Optional[str] = None    
+    cidade: Optional[str] = None    
+
+# Adicione este schema para devolver os dados ao React
+class ProfileResponse(BaseModel):
+    telefone: Optional[str] = None
+    campus: Optional[str] = None
+    matricula: Optional[str] = None
+    curso: Optional[str] = None
+    cpf: Optional[str] = None       
+    cidade: Optional[str] = None    
+    
+    class Config:
+        from_attributes = True
 
 class UserBase(BaseModel):
     """Schema base com campos comuns."""
@@ -48,6 +67,7 @@ class UserResponse(TimestampedSchema):
     is_email_verified: bool
     last_login: Optional[datetime] = None
     has_password: bool
+    profile: Optional[ProfileResponse] = None
 
     class Config:
         from_attributes= True  # Permite ler dados direto do objeto SQLAlchemy
@@ -61,7 +81,8 @@ class UserProfile(UserResponse):
 class UserUpdateProfile(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=100)
     avatar_url: Optional[str] = Field(None, max_length=500)
-
+    profile: Optional[ProfileUpdate] = None
+    
 class ChangePassword(BaseModel):
     """Schema para troca de senha."""
     current_password: str

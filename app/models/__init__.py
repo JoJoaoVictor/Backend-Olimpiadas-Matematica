@@ -7,7 +7,7 @@ from .question import Question, DifficultyLevel
 from .exam import Exam, ExamStatus
 from .associations import ExamQuestion
 from .notification import Notification, NotificationType, EntityType
- 
+from .user_profile import UserProfile
 __all__ = [
     "BaseModel",
     "User", 

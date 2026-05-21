@@ -13,15 +13,15 @@ from app.models.base import BaseModel
 
 class UserRole(str, enum.Enum):
     """Define os níveis de acesso do sistema."""
-    ADMIN    = "ADMIN"
+    ADMIN     = "ADMIN"
     PROFESSOR = "PROFESSOR"
-    REVISOR  = "REVISOR"
-    STUDENT  = "STUDENT"
+    REVISOR   = "REVISOR"
+    STUDENT   = "STUDENT"
 
 
 class User(BaseModel):
     __tablename__ = "users"
-
+    profile = relationship("UserProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
     # ==========================
     # INFORMAÇÕES BÁSICAS
     # ==========================
@@ -38,8 +38,8 @@ class User(BaseModel):
     # ==========================
     # PERMISSÕES E ESTADOS
     # ==========================
-    role             = Column(Enum(UserRole), default=UserRole.PROFESSOR, nullable=False)
-    is_active        = Column(Boolean, default=True,  nullable=False)
+    role              = Column(Enum(UserRole), default=UserRole.PROFESSOR, nullable=False)
+    is_active         = Column(Boolean, default=True,  nullable=False)
     is_email_verified = Column(Boolean, default=False, nullable=False)
 
     # ==========================
@@ -92,6 +92,18 @@ class User(BaseModel):
         "Notification",
         foreign_keys="Notification.user_id",
         cascade="all, delete-orphan"
+    )
+
+    # ── profile ───────────────────────────────────────────────────────────────
+    # Relacionamento 1:1 com UserProfile (campus, CPF, matrícula, etc).
+    # uselist=False garante que user.profile retorne um objeto, não uma lista.
+    # cascade="all, delete-orphan" apaga o perfil quando o usuário for removido.
+    profile = relationship(
+        "UserProfile",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+        lazy="joined"
     )
 
     # ==========================
