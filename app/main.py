@@ -68,7 +68,7 @@ from app.database import engine, Base
 
 # Importa os roteadores de cada módulo da versão 1 da API
 from app.api.v1 import auth, users, questions, categories, graus, exams, images, notifications
-
+from app.api.v1 import bncc_custom
 # --------------------------------------------------------------------------------
 # 1. CONFIGURAÇÃO DE LOGS
 # --------------------------------------------------------------------------------
@@ -101,9 +101,11 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"❌ Erro ao criar tabelas: {e}")
 
-    # Aquece o Playwright no startup
+    # Aquece o Playwright no startup com a chamada assíncrona correta
     try:
-        PlaywrightManager.get_browser()
+        logger.info("🌐 Inicializando instâncias do navegador Playwright...")
+        await PlaywrightManager.get_browser()  # <-- CORREÇÃO: 'await' adicionado!
+        logger.info("✅ Playwright inicializado com sucesso.")
     except Exception as e:
         logger.error(f"❌ Erro ao iniciar o Playwright: {e}")
 
@@ -111,9 +113,11 @@ async def lifespan(app: FastAPI):
     yield
 
     # Código executado quando a aplicação é encerrada
-    PlaywrightManager.close()
+    try:
+        await PlaywrightManager.close()  # <-- Se o seu manager fechar de forma assíncrona, use await também
+    except Exception:
+        PlaywrightManager.close()
     logger.info("👋 Encerrando aplicação")
-
 # --------------------------------------------------------------------------------
 # 3. INICIALIZAÇÃO DO APP
 # --------------------------------------------------------------------------------
@@ -160,6 +164,7 @@ os.makedirs("uploads/images", exist_ok=True)
 
 # Serve arquivos de upload
 app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_PATH), name="uploads")
+app.include_router(bncc_custom.router, prefix="/api/v1/bncc-custom", tags=["BNCC Custom"])
 
 # --------------------------------------------------------------------------------
 # 6. MIDDLEWARE DE LOGGING DE REQUISIÇÕES

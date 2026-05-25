@@ -24,6 +24,9 @@ from app.models.user_profile import UserProfile
 from app.services.auth_service import AuthService
 from app.core.exceptions import AppException
 from app.core.config import settings
+from sqlalchemy.exc import IntegrityError
+import logging
+from fastapi import HTTPException, status, Depends
 
 # Schemas
 from app.schemas.auth import (
@@ -37,7 +40,7 @@ from app.schemas.auth import (
 from app.schemas.user import UserResponse 
 
 router = APIRouter()
-
+logger = logging.getLogger(__name__)
 
 # =========================
 # REGISTRO
@@ -49,30 +52,16 @@ async def register_user(
 ):
     """Registra novo usuário, cria perfil acadêmico e faz login automático."""
     try:
+        # 1. O Service faz toda a validação, hash de senha e salva Usuário + Perfil com um único commit
         user = AuthService.register_user(db, user_data)
 
-        # ── Cria o perfil acadêmico vinculado ao usuário ──────────────
-        # Os campos novos chegam via UserRegister (ver auth_schema_patch.py)
-        profile = UserProfile(
-            user_id   = user.id,
-            cpf       = user_data.cpf       or None,
-            telefone  = user_data.telefone  or None,
-            campus    = user_data.campus    or None,
-            cidade    = user_data.cidade    or None,
-            matricula = user_data.matricula or None,
-            curso     = user_data.curso     or None,
-        )
-        db.add(profile)
-        db.commit()
-        db.refresh(user)
-        # ─────────────────────────────────────────────────────────────
-
-        # Login automático após registro
+        # 2. Faz o login automático gerando os tokens (Access e Refresh)
         _, tokens = AuthService.authenticate_user(
             db,
             UserLogin(email=user_data.email, password=user_data.password),
         )
 
+        # 3. Retorna os dados no formato exato que o React espera
         return {
             "success": True,
             "message": "Usuário registrado com sucesso",
@@ -83,7 +72,16 @@ async def register_user(
         }
 
     except AppException as e:
+        # Cai aqui se o email ou CPF já existirem (Erro amigável para o Front, sem CORS)
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except Exception as e:
+        # Cai aqui apenas se o banco de dados cair ou der erro grave no servidor
+        db.rollback()
+        logger.error(f"Erro inesperado no registro: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Erro interno ao registrar usuário."
+        )
 
 
 # =========================
@@ -173,11 +171,12 @@ async def refresh_access_token(
 # =========================
 # PERFIL
 # =========================
+@router.get("/me")
 @router.get("/profile")
 async def get_user_profile(
     current_user: User = Depends(get_current_user),
 ):
-    """Retorna perfil do usuário autenticado."""
+    """Retorna perfil do usuário autenticado (Atende /me e /profile)."""
     return {
         "success": True,
         "data": {"user": UserResponse.from_orm(current_user)},

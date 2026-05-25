@@ -77,10 +77,11 @@ class QuestionUpdate(BaseModel):
 class QuestionResponse(QuestionBase, TimestampedSchema):
     category: CategoryResponse
     grau: GrauResponse
-    author: UserResponse
+    author: Optional[UserResponse] = None  
     image: Optional[ImageResponse] = None
     rendered_formula_url: Optional[str] = None
-
+    is_applied: bool
+    
     model_config = {
         "from_attributes": True
     }

@@ -7,6 +7,7 @@ from io import BytesIO
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
+from app.models.question import Question
 
 from app.database import get_db
 from app.dependencies import (
@@ -15,6 +16,7 @@ from app.dependencies import (
     get_professor_or_revisor_user,
     get_admin_user
 )
+
 from app.models.user import User
 from app.models.exam import ExamStatus
 from app.schemas.exam import (
@@ -34,6 +36,10 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+from pydantic import BaseModel
+
+class ExamQuestionToggleAlternatives(BaseModel):
+    hide_alternatives: bool
 
 @router.get("", response_model=dict)
 async def list_exams(
@@ -84,14 +90,13 @@ async def generate_pdf_from_payload(
 ):
     """Gera PDF a partir de payload JSON enviado pelo frontend."""
     try:
-        name         = payload.get("name", "Prova Sem Título")
+        name          = payload.get("name", "Prova Sem Título")
         raw_fase      = payload.get("fase", "")
         raw_anos      = payload.get("anos", [])
         raw_questions = payload.get("questoes", [])
         ano_prova     = payload.get("ano", None) or __import__("datetime").datetime.now().year
 
-        # Normaliza anos: pode vir como string única ou lista de labels do react-select
-        # Exemplos: "4º Fundamental", ["4º Fundamental", "5º Fundamental"], ["1º Médio"]
+        # Normaliza anos
         if isinstance(raw_anos, str):
             anos_lista = [raw_anos] if raw_anos.strip() else []
         elif isinstance(raw_anos, list):
@@ -99,52 +104,35 @@ async def generate_pdf_from_payload(
         else:
             anos_lista = []
 
-        # Normaliza fase: pode vir como value do select ("1","2","Final") ou label ("Fase 1")
         fase = raw_fase if raw_fase else ""
 
         logger.info(f"📦 Gerando PDF para prova '{name}' com {len(raw_questions)} questões")
 
-        formatted_questions = []
+        # 1. EXTRAI APENAS OS IDS E A FLAG DO PAYLOAD DO REACT
+        question_ids = []
+        hide_alts_map = {}
+        
         for q in raw_questions:
-            q_obj = {}
-            q_obj['id'] = q.get("id")
-            q_obj['name'] = q.get("name", "")
-            q_obj['question_statement'] = q.get("question_statement") or q.get("questionStatement") or ""
-            q_obj['questionStatement'] = q_obj['question_statement']
-            q_obj['alternatives'] = q.get("alternatives", "")
-            q_obj['correctAlternative'] = q.get("correct_alternative") or q.get("correctAlternative") or ""
-            q_obj['correct_alternative'] = q_obj['correctAlternative']
-            q_obj['detailedResolution'] = q.get("detailedResolution", "") or q.get("detailed_resolution", "")
-            q_obj['detailed_resolution'] = q_obj['detailedResolution']
+            q_id = q.get("id")
+            if q_id:
+                question_ids.append(q_id)
+                # Guarda se o React avisou que essa questão não tem alternativa
+                hide_alts_map[q_id] = q.get("hide_alternatives") in [True, "true"]
 
-            image_field = q.get("image")
-            if image_field:
-                if isinstance(image_field, dict) and "url" in image_field:
-                    q_obj['image'] = image_field['url']
-                    q_obj['image_role'] = image_field.get('role')
-                elif isinstance(image_field, str):
-                    q_obj['image'] = image_field
-                else:
-                    q_obj['image'] = None
-            else:
-                images_array = q.get("images", [])
-                if images_array and isinstance(images_array, list) and len(images_array) > 0:
-                    first = images_array[0]
-                    if isinstance(first, dict) and 'src' in first:
-                        q_obj['image'] = first['src']
-                        q_obj['image_role'] = first.get('role')
-                    elif isinstance(first, str):
-                        q_obj['image'] = first
-                else:
-                    q_obj['image'] = None
-
-            if 'image_role' not in q_obj or q_obj['image_role'] is None:
-                q_obj['image_role'] = q.get("image_role")
-
-            if q_obj.get('image') and isinstance(q_obj['image'], str) and q_obj['image'].startswith('/uploads/'):
-                q_obj['image'] = 'http://localhost:8000' + q_obj['image']
-
-            formatted_questions.append(q_obj)
+        # 2. BUSCA AS QUESTÕES COMPLETAS NO BANCO DE DADOS
+        full_questions = []
+        if question_ids:
+            # Busca no banco
+            db_questions = db.query(Question).filter(Question.id.in_(question_ids)).all()
+            
+            # INJETA A FLAG EFÊMERA ANTES DE MANDAR PRO GERADOR DE PDF
+            for db_q in db_questions:
+                # Cria a propriedade dinâmica na memória só para o PDF_service ler
+                db_q.hide_alternatives = hide_alts_map.get(db_q.id, False)
+            
+            # Ordena para manter a ordem exata que veio do frontend
+            question_map = {q.id: q for q in db_questions}
+            full_questions = [question_map[qid] for qid in question_ids if qid in question_map]
 
         mock_exam = {
             'name':      name,
@@ -174,9 +162,10 @@ async def generate_pdf_from_payload(
             }
         )
 
+        # 3. MANDA AS QUESTÕES QUE VIERAM DO BANCO (full_questions) PARA O GERADOR
         pdf_buffer = await PDFService.generate_exam_pdf(
             mock_exam,
-            formatted_questions,
+            full_questions, 
             pdf_request
         )
 
@@ -198,8 +187,6 @@ async def generate_pdf_from_payload(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno ao gerar PDF: {str(e)}"
         )
-
-
 @router.get("/{exam_id}", response_model=dict)
 async def get_exam(
     exam_id: int,
@@ -232,10 +219,67 @@ async def update_exam(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
+@router.patch("/{exam_id}/questions/{question_id}", response_model=dict)
+async def toggle_exam_question_alternatives(
+    exam_id: int,
+    question_id: int,
+    payload: ExamQuestionToggleAlternatives,
+    current_user: User = Depends(get_professor_or_revisor_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Alterna a flag hide_alternatives de uma questão específica dentro de uma prova.
+    """
+    try:
+        # 1. Busca a prova usando o próprio serviço existente no backend
+        exam = ExamService.get_exam_by_id(db, exam_id, current_user)
+        if not exam:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Prova não encontrada."
+            )
+
+        # 2. Percorre a lista de exam_questions vinculadas para achar a correta
+        assoc = None
+        for eq in exam.exam_questions:
+            if eq.question_id == question_id:
+                assoc = eq
+                break
+
+        if not assoc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Esta questão não está vinculada a esta prova."
+            )
+
+        # 3. Altera a propriedade diretamente no objeto interceptado
+        assoc.hide_alternatives = payload.hide_alternatives
+        db.commit()
+        db.refresh(assoc)
+        db.refresh(exam)
+
+        return {
+            "success": True,
+            "message": "Exibição de alternativas atualizada com sucesso",
+            "data": {"exam": ExamResponse.from_orm(exam)}
+        }
+
+    except HTTPException as he:
+        raise he
+    except AppException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except Exception as e:
+        logger.error(f"Erro ao alternar alternativas da questão {question_id} na prova {exam_id}: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro interno ao atualizar a questão na prova."
+        )
+    
 @router.patch("/{exam_id}/questions", response_model=dict)
 async def update_exam_questions(
     exam_id: int,
-    questions_data: ExamQuestionUpdate,
+    questions_data: List[ExamQuestionUpdate],
     current_user: User = Depends(get_professor_or_revisor_user),
     db: Session = Depends(get_db)
 ):
@@ -324,24 +368,28 @@ async def generate_exam_pdf(
     db: Session = Depends(get_db)
 ):
     try:
+        # 1. Busca o exame com as relações
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        # Força o carregamento antecipado da imagem de cada questão
+        # 2. Força o carregamento antecipado das imagens a partir da questão real
         for eq in exam.exam_questions:
             if eq.question:
                 _ = eq.question.image
 
-        questions = [
-            eq.question
-            for eq in sorted(exam.exam_questions, key=lambda x: x.order_index)
-        ]
+        # 3. Ordena a lista da tabela intermediária (que contém o hide_alternatives salvo)
+        exam_questions_ordered = sorted(
+            exam.exam_questions, 
+            key=lambda x: getattr(x, 'order_index', 0)
+        )
 
+        # 4. Configura as variáveis de metadados da capa
         logo_path = getattr(settings, "DEFAULT_LOGO_PATH", None)
         inst_name = institution_name or getattr(settings, "DEFAULT_INSTITUTION_NAME", "Olimpíadas de Matemática")
 
+        # 5. Monta o pdf_request PRIMEIRO antes de chamar o serviço
         pdf_request = ExamPDFRequest(
             exam_id=exam_id,
-            questions=[],
+            questions=[],  # Mantido conforme sua estrutura original
             fase=getattr(exam, 'fase', '1ª FASE'),
             anos=getattr(exam, 'anos', []),
             escola=getattr(exam, 'escola', ''),
@@ -355,8 +403,10 @@ async def generate_exam_pdf(
             }
         )
 
-        pdf_buffer = await PDFService.generate_exam_pdf(exam, questions, pdf_request)
+        # 6. Chama o PDFService passando a lista intermediária ORDENADA com as flags salvas
+        pdf_buffer = await PDFService.generate_exam_pdf(exam, exam_questions_ordered, pdf_request)
 
+        # 7. Define o nome do arquivo de download de forma segura
         safe_name = "".join([c if c.isalnum() else "_" for c in exam.name])
         filename = f"prova_{safe_name}.pdf"
 

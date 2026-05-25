@@ -1,8 +1,12 @@
 # app/services/pdf_service.py
 
 import io
+import os
 import json
 import logging
+import asyncio
+import base64
+from pathlib import Path
 from typing import List, Optional, Any, Dict
 
 from app.models.exam import Exam
@@ -18,7 +22,7 @@ if not hasattr(AdvancedPDFGenerator, 'create_exam_pdf'):
 
 class PDFService:
 
-    # ─── métodos de geração (agora assíncronos) ──────────────────────────
+    # ─── MÉTODOS DE GERAÇÃO ASSÍNCRONOS ──────────────────────────────────
     @staticmethod
     async def generate_exam_pdf(
         exam: Any,
@@ -60,7 +64,7 @@ class PDFService:
         )
         return pdf_buffer
 
-    # ─── métodos auxiliares (inalterados exceto _extract_image_from_sqlalchemy) ──
+    # ─── MÉTODOS AUXILIARES E PREPARAÇÃO DE DADOS ────────────────────────
     @staticmethod
     def _prepare_exam_data(exam: Any, pdf_request: ExamPDFRequest) -> Dict[str, Any]:
         """Monta o dict que será passado para AdvancedPDFGenerator.create_exam_pdf."""
@@ -94,69 +98,148 @@ class PDFService:
             }
 
     @staticmethod
-    def _prepare_questions_data(questions: List[Any]) -> List[Dict[str, Any]]:
-        """Converte lista de questões para dict, preservando campos."""
-        clean_questions = []
-        for idx, q in enumerate(questions):
-            try:
-                if isinstance(q, dict):
-                    question_data = {
-                        "id":                 q.get("id"),
-                        "question_statement": q.get("question_statement") or q.get("questionStatement") or "",
-                        "questionStatement":  q.get("questionStatement")  or q.get("question_statement") or "",
-                        "image":              q.get("image"),
-                        "image_role":         q.get("image_role"),
-                        "alternatives":       q.get("alternatives", {}),
-                        "correctAlternative": q.get("correctAlternative") or q.get("correct_alternative", ""),
-                        "correct_alternative":q.get("correctAlternative") or q.get("correct_alternative", ""),
-                        "name":               q.get("name", ""),
-                        "detailedResolution": q.get("detailedResolution", ""),
-                        "detailed_resolution":q.get("detailedResolution", ""),
-                    }
-                else:
-                    question_data = {
-                        "id":                 getattr(q, 'id', None),
-                        "question_statement": getattr(q, 'question_statement', '') or getattr(q, 'questionStatement', ''),
-                        "questionStatement":  getattr(q, 'questionStatement', '')  or getattr(q, 'question_statement', ''),
-                        "image":              PDFService._extract_image_from_sqlalchemy(q),
-                        "image_role":         getattr(q, 'image_role', None),
-                        "alternatives":       PDFService._sanitize_alternatives(q),
-                        "correctAlternative": getattr(q, 'correctAlternative', '') or getattr(q, 'correct_alternative', ''),
-                        "correct_alternative":getattr(q, 'correctAlternative', '') or getattr(q, 'correct_alternative', ''),
-                        "name":               getattr(q, 'name', ''),
-                        "detailedResolution": getattr(q, 'detailedResolution', '') or getattr(q, 'detailed_resolution', ''),
-                        "detailed_resolution":getattr(q, 'detailed_resolution', '') or getattr(q, 'detailedResolution', ''),
-                    }
-                clean_questions.append(question_data)
-            except Exception as e:
-                logger.error(f"Erro ao processar questão {idx}: {e}")
-                q_id = q.get('id') if isinstance(q, dict) else getattr(q, 'id', '?')
-                clean_questions.append({
-                    "id": q_id,
-                    "question_statement": f"[Erro ao carregar questão {q_id}]",
-                    "questionStatement":  f"[Erro ao carregar questão {q_id}]",
-                    "image": None,
-                    "image_role": None,
-                    "alternatives": {},
-                    "correctAlternative": "-",
-                    "correct_alternative":"-",
-                    "name": "",
-                    "detailedResolution": "",
-                    "detailed_resolution":"",
-                })
-        logger.info(f"✅ {len(clean_questions)} questões preparadas")
-        return clean_questions
+    def _prepare_questions_data(exam_questions: List[Any]) -> List[Dict[str, Any]]:
+        """Mapeamento blindado com base64 inteligente de imagens do Windows e controle de alternativas."""
+        questions_data = []
+        
+        for eq in exam_questions:
+            # Identifica modelo real
+            is_assoc = hasattr(eq, 'question') and getattr(eq, 'question', None) is not None
+            q = eq.question if is_assoc else eq
+            
+            # Recupera a flag do botão "esconder alternativas" (Tenta achar a nível de dict ou Model)
+            hide_alts = False
+            
+            # 1. Tenta buscar a flag na tabela associativa (ExamQuestion) se aplicável
+            if is_assoc and hasattr(eq, 'hide_alternatives'):
+                hide_alts = bool(getattr(eq, 'hide_alternatives'))
+            # 2. Tenta buscar no modelo Question ou num dicionário puro
+            elif hasattr(q, 'hide_alternatives'):
+                hide_alts = bool(getattr(q, 'hide_alternatives'))
+            elif isinstance(eq, dict):
+                hide_alts = bool(eq.get('hide_alternatives', False))
+
+            # Converte alternativas
+            raw_alternatives = getattr(q, 'alternatives', {})
+            alternatives_dict = PDFService._convert_alternatives_to_dict(raw_alternatives)
+            
+            #  Zera alternativas se a flag de esconder for verdadeira
+            # O dicionário vira vazio, e o gerador de PDF não vai desenhar as alternativas (letras A, B, C...)
+            if hide_alts:
+                alternatives_dict = {}
+
+            # Conversão robusta de imagem local -> base64 (Evita erro de Caminho Absoluto no Windows)
+            image_base64 = None
+            if getattr(q, 'image', None) and getattr(q.image, 'file_path', None):
+                # Remove barras invertidas ou iniciais que o Windows entende como disco C:
+                raw_path = str(q.image.file_path).replace('\\', '/')
+                if raw_path.startswith('/'):
+                    raw_path = raw_path.lstrip('/')
+                
+                # Concatena a pasta do seu projeto local com a pasta de uploads
+                file_path = Path(os.getcwd()) / raw_path
+
+                try:
+                    if file_path.exists():
+                        with open(file_path, "rb") as image_file:
+                            encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+                            mime_type = getattr(q.image, 'mime_type', 'image/png')
+                            image_base64 = f"data:{mime_type};base64,{encoded_string}"
+                    else:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"Imagem não encontrada fisicamente: {file_path}")
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"Erro ao converter imagem em base64: {e}")
+
+            # Fallbacks finais de imagens
+            img_dict = PDFService._extract_image_from_sqlalchemy(q)
+            image_url_final = image_base64 if image_base64 else (img_dict.get('url') if img_dict else None)
+            image_role_final = img_dict.get('role') if img_dict else getattr(q, 'image_role', None)
+
+            questions_data.append({
+                "id": getattr(q, 'id', None),
+                "name": getattr(q, 'name', ''),
+                "professor_name": getattr(q, 'professor_name', ''),
+                "serie_ano": getattr(q, 'serie_ano', ''),
+                "phase_level": getattr(q, 'phase_level', ''),
+                "difficulty_level": getattr(q, 'difficulty_level', ''),
+                "bncc_theme": getattr(q, 'bncc_theme', ''),
+                "knowledge_objects": getattr(q, 'knowledge_objects', ''),
+                "ability_code": getattr(q, 'ability_code', ''),
+                "ability_description": getattr(q, 'ability_description', ''),
+                
+                # ENUNCIADO DE VOLTA COM DUPLO MAPEAMENTO DE CHAVE
+                "statement": getattr(q, 'question_statement', ''),
+                "question_statement": getattr(q, 'question_statement', ''),
+                
+                # ALTERNATIVAS OBEDECENDO A FLAG E MAPEADAS
+                "alternatives": alternatives_dict,
+                "hide_alternatives": hide_alts,
+                
+                "correct_alternative": getattr(q, 'correct_alternative', ''),
+                "detailed_resolution": getattr(q, 'detailed_resolution', ''),
+                "latex_formula": getattr(q, 'latex_formula', None),
+                "rendered_formula_url": getattr(q, 'rendered_formula_url', None),
+                
+                # IMAGENS EM BASE64 COM DUPLO MAPEAMENTO
+                "image_url": image_url_final,
+                "image": {"url": image_url_final, "role": image_role_final} if image_url_final else None,
+                "image_role": image_role_final,
+            })
+            
+        return questions_data
+    
+    @staticmethod
+    def _convert_alternatives_to_dict(alternatives_field: Any) -> Dict[str, Any]:
+        """Garante o retorno de um dicionário válido de alternativas."""
+        if not alternatives_field:
+            return {}
+        
+        if isinstance(alternatives_field, dict):
+            return alternatives_field.copy()
+            
+        if isinstance(alternatives_field, str):
+            text_str = alternatives_field.strip()
+            
+            if text_str.startswith('{') and text_str.endswith('}'):
+                try:
+                    parsed = json.loads(text_str)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    pass
+
+            import re
+            pattern = re.compile(r'(?:^|\s+)([a-eA-E0-9])[\s\)]+\s*(.*?)(?=\s+(?:[a-eA-E0-9])[\s\)]+\s*|$)')
+            normalized_text = " ".join(text_str.split())
+            matches = pattern.findall(normalized_text)
+            
+            if matches:
+                return {key.lower(): value.strip() for key, value in matches}
+            
+            lines = [line.strip() for line in text_str.split('\n') if line.strip()]
+            fallback_dict = {}
+            for line in lines:
+                if ')' in line:
+                    parts = line.split(')', 1)
+                    key = parts[0].strip().lower()
+                    val = parts[1].strip()
+                    if len(key) == 1:
+                        fallback_dict[key] = val
+            if fallback_dict:
+                return fallback_dict
+                
+        return {}
 
     @staticmethod
     def _extract_image_from_sqlalchemy(question_obj) -> Optional[Dict[str, Any]]:
-        """
-        Extrai a URL da imagem de forma agnóstica (ORM ou dicionário).
-        Retorna um dicionário com 'url' (absoluta) e 'role', ou None.
-        """
+        """Extrai a URL da imagem de forma agnóstica (ORM ou dicionário)."""
         url = None
         role = getattr(question_obj, 'image_role', None) or 'MEDIUM'
 
-        # 1. Tenta o relacionamento 'image' (objeto ORM carregado)
         img_obj = getattr(question_obj, 'image', None)
         if img_obj:
             if hasattr(img_obj, 'url'):
@@ -166,13 +249,13 @@ class PDFService:
                 url = img_obj.get('url') or img_obj.get('file_path')
                 role = img_obj.get('role', role)
 
-        # 2. Campos alternativos
         if not url:
             for field in ('image_path', 'image_url', 'url', 'file_path'):
                 val = getattr(question_obj, field, None)
                 if val and isinstance(val, str):
                     url = val
                     break
+
         if not url and isinstance(question_obj, dict):
             for field in ('image_path', 'image_url', 'url', 'file_path'):
                 val = question_obj.get(field)
@@ -185,7 +268,6 @@ class PDFService:
                     url = img.get('url') or img.get('file_path')
                     role = img.get('role', role)
 
-        # 3. Fallback via image_id (busca no banco)
         if not url:
             img_id = getattr(question_obj, 'image_id', None) or (
                 isinstance(question_obj, dict) and question_obj.get('image_id')
@@ -199,7 +281,6 @@ class PDFService:
                         url = img.url
                         role = getattr(question_obj, 'image_role', None) or 'MEDIUM'
 
-        # 4. Converte caminho relativo em URL absoluta
         if url and isinstance(url, str) and url.startswith('/uploads/'):
             from app.core.config import settings
             base_url = getattr(settings, 'API_BASE_URL', 'http://127.0.0.1:8000').rstrip('/')
@@ -211,24 +292,6 @@ class PDFService:
         return {'url': url.strip(), 'role': role}
 
     @staticmethod
-    def _sanitize_alternatives(question: Any) -> Any:
-        if isinstance(question, dict):
-            alt = question.get('alternatives')
-        else:
-            alt = getattr(question, 'alternatives', None)
-
-        if isinstance(alt, dict):
-            return alt
-        if not alt:
-            return {}
-        if isinstance(alt, str):
-            try:
-                return json.loads(alt)
-            except:
-                return alt
-        return str(alt)
-
-    @staticmethod
     async def _save_to_file(buffer: io.BytesIO, filepath: str) -> None:
         loop = asyncio.get_event_loop()
         def _write():
@@ -237,7 +300,7 @@ class PDFService:
         await loop.run_in_executor(None, _write)
 
 
-# Funções auxiliares para retrocompatibilidade (inalteradas)
+# Funções auxiliares para retrocompatibilidade
 async def generate_exam_pdf_async(
     exam: Any,
     questions: List[Any],

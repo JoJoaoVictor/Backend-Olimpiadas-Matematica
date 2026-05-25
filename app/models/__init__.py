@@ -8,6 +8,8 @@ from .exam import Exam, ExamStatus
 from .associations import ExamQuestion
 from .notification import Notification, NotificationType, EntityType
 from .user_profile import UserProfile
+from .custom_bncc_model import CustomBNCC
+
 __all__ = [
     "BaseModel",
     "User", 
@@ -23,4 +25,6 @@ __all__ = [
     "Notification",
     "NotificationType",
     "EntityType",
+    "UserProfile",
+    "CustomBNCC", 
 ]

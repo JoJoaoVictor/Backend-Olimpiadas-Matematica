@@ -6,7 +6,7 @@ from sqlalchemy import Column, String, Text, Integer, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 import enum
 from app.models.base import BaseModel
-
+from sqlalchemy.ext.hybrid import hybrid_property
 
 class DifficultyLevel(int, enum.Enum):
     MUITO_FACIL   = 1
@@ -81,3 +81,8 @@ class Question(BaseModel):
 
     def __repr__(self):
         return f"<Question(id={self.id}, name='{self.name[:30]}...')>"
+    
+    @hybrid_property
+    def is_applied(self) -> bool:
+        """Retorna True se a questão já foi associada a alguma prova."""
+        return len(self.exam_questions) > 0

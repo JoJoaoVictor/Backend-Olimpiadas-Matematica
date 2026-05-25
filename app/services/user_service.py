@@ -4,27 +4,123 @@ Arquivo: app/services/user_service.py
 """
 
 from typing import List, Optional, Dict, Any
-from sqlalchemy.orm import Session
-from sqlalchemy import or_, func
 from fastapi import HTTPException, status
+from sqlalchemy import or_, func
+from sqlalchemy.orm import Session, joinedload
 
+from app.core.security import get_password_hash
 # Imports dos Models e Schemas
 from app.models.user import User, UserRole
+from app.models.user_profile import UserProfile
 from app.schemas.user import UserCreate, UserUpdate, UserRoleUpdate
-from app.core.security import get_password_hash
+
 
 class UserService:
     """
     Classe contendo toda a lógica de manipulação de usuários.
     Encapsula o acesso ao banco (SQLAlchemy).
     """
-    
+
+    #  Mapeamento estrito para blindar o preenchimento de Cidade a partir do Campus/Polo
+    CAMPUS_CIDADE_MAP = {
+        "ALTA_FLORESTA": "Alta Floresta",
+        "BARRA_DO_BUGRES": "Barra do Bugres",
+        "CACERES": "Cáceres",
+        "COLIDER": "Colíder",
+        "DIAMANTINO": "Diamantino",
+        "GUARANTA_DO_NORTE": "Guarantã do Norte",
+        "JUARA": "Juara",
+        "JUINA": "Juína",
+        "NOVA_MUTUM": "Nova Mutum",
+        "NOVA_XAVANTINA": "Nova Xavantina",
+        "PONTES_E_LACERDA": "Pontes e Lacerda",
+        "SINOP": "Sinop",
+        "TANGARA_DA_SERRA": "Tangará da Serra",
+        
+        "ALTO_PARAGUAI": "Alto Paraguai",
+        "NORTELANDIA": "Nortelândia",
+        "NOVA_MARILANDIA": "Nova Marilândia",
+        "NOVA_OLIMPIA": "Nova Olímpia",
+        "PORTO_ESTRELA": "Porto Estrela",
+        
+        "CAMPO_NOVO_DO_PARECIS": "Campo Novo do Parecis",
+        "CARLINDA": "Carlinda",
+        "ITANHANGA": "Itanhangá",
+        "ITAUBA": "Itaúba",
+        "LUCAS_DO_RIO_VERDE": "Lucas do Rio Verde",
+        "MARCELANDIA": "Marcelândia",
+        "NOVA_CANAA_DO_NORTE": "Nova Canaã do Norte",
+        "NOVA_MONTE_VERDE": "Nova Monte Verde",
+        "NOVA_SANTA_HELENA": "Nova Santa Helena",
+        "PARANAITA": "Paranaíta",
+        "PORTO_DOS_GAUCHOS": "Porto dos Gaúchos",
+        "TABAPORA": "Tabaporã",
+        "TAPURAH": "Tapurah",
+        "TERRA_NOVA_DO_NORTE": "Terra Nova do Norte"
+    }
+
+    @staticmethod
+    def update_user_profile(db: Session, user_id: int, user_data: dict) -> User:
+        """
+        Atualiza os dados cadastrais do próprio usuário logado e preenche
+        automaticamente a Cidade correspondente ao Campus/Polo selecionado.
+        """
+        user = db.query(User).options(joinedload(User.profile)).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuário não encontrado"
+            )
+
+        # 1. Atualização dos dados da tabela primária (User)
+        if "name" in user_data and user_data["name"] is not None:
+            user.name = user_data["name"].strip()
+        if "avatar_url" in user_data and user_data["avatar_url"] is not None:
+            user.avatar_url = user_data["avatar_url"].strip()
+
+        # 2. Atualização dos dados da tabela secundária (UserProfile)
+        profile_data = user_data.get("profile")
+        if profile_data:
+            if not user.profile:
+                user.profile = UserProfile(user_id=user.id)
+                db.add(user.profile)
+
+            # Atualiza os campos opcionais e padroniza strings vazias do Front como None
+            fields_to_update = ["telefone", "matricula", "curso", "cpf"]
+            for field in fields_to_update:
+                if field in profile_data:
+                    val = profile_data[field]
+                    if isinstance(val, str) and not val.strip():
+                        val = None
+                    setattr(user.profile, field, val)
+
+            # Inteligência de Geolocalização do Campus
+            if "campus" in profile_data:
+                raw_campus = profile_data["campus"]
+                if raw_campus and str(raw_campus).strip():
+                    # Normaliza e limpa ruídos visuais de strings antigas do front
+                    cleaned_campus = (
+                        str(raw_campus)
+                        .replace("UNEMAT - ", "")
+                        .replace("Polo - ", "")
+                        .strip()
+                        .upper()
+                        .replace(" ", "_")
+                    )
+                    user.profile.campus = cleaned_campus
+                    # Vincula a cidade exata baseando-se no dicionário de constantes
+                    user.profile.cidade = UserService.CAMPUS_CIDADE_MAP.get(cleaned_campus, None)
+                else:
+                    user.profile.campus = None
+                    user.profile.cidade = None
+
+        db.commit()
+        db.refresh(user)
+        return user
+
     @staticmethod
     def create_user(db: Session, user_data: UserCreate, current_user: User) -> User:
-        """
-        Cria novo usuário (Apenas Admin).
-        """
-        # 1. Verifica duplicidade de email
+        """Cria novo usuário (Apenas Admin)."""
         existing_user = db.query(User).filter(User.email == user_data.email).first()
         if existing_user:
             raise HTTPException(
@@ -32,21 +128,18 @@ class UserService:
                 detail="Email já está em uso"
             )
         
-        # 2. Prepara o objeto
         user = User(
             name=user_data.name,
             email=user_data.email,
             hashed_password=get_password_hash(user_data.password),
             role=user_data.role or UserRole.STUDENT,
             is_active=user_data.is_active if user_data.is_active is not None else True,
-            is_email_verified=True # Assumimos verificado se criado por Admin
+            is_email_verified=True
         )
         
-        # 3. Salva no banco
         db.add(user)
         db.commit()
         db.refresh(user)
-        
         return user
     
     @staticmethod
@@ -58,10 +151,8 @@ class UserService:
         role: Optional[UserRole] = None,
         is_active: Optional[bool] = None
     ) -> List[User]:
-        """
-        Lista usuários aplicando filtros de busca.
-        """
-        query = db.query(User)
+        """Lista usuários aplicando filtros de busca."""
+        query = db.query(User).options(joinedload(User.profile))
         
         if search:
             query = query.filter(
@@ -82,7 +173,7 @@ class UserService:
     @staticmethod
     def get_user_by_id(db: Session, user_id: int) -> User:
         """Busca usuário por ID."""
-        user = db.query(User).filter(User.id == user_id).first()
+        user = db.query(User).options(joinedload(User.profile)).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -104,11 +195,8 @@ class UserService:
     ) -> User:
         """Atualiza dados gerais do usuário."""
         user = UserService.get_user_by_id(db, user_id)
-        
-        # Converte para dict removendo campos não enviados (None)
         update_data = user_data.dict(exclude_unset=True)
         
-        # Validação extra de email duplicado na edição
         if "email" in update_data and update_data["email"] != user.email:
              exists = db.query(User).filter(User.email == update_data["email"]).first()
              if exists:
@@ -119,7 +207,6 @@ class UserService:
         
         db.commit()
         db.refresh(user)
-        
         return user
 
     @staticmethod
@@ -129,12 +216,9 @@ class UserService:
         role_data: UserRoleUpdate,
         current_user: User
     ) -> User:
-        """
-        Atualiza APENAS o cargo do usuário.
-        """
+        """Atualiza APENAS o cargo do usuário."""
         user = UserService.get_user_by_id(db, user_id)
         
-        # Segurança: Admin não pode alterar o próprio cargo por aqui para não se bloquear
         if user.id == current_user.id:
              raise HTTPException(
                  status_code=status.HTTP_409_CONFLICT,
@@ -148,9 +232,7 @@ class UserService:
     
     @staticmethod
     def delete_user(db: Session, user_id: int, current_user: User) -> User:
-        """
-        Remove usuário (Soft Delete ou Hard Delete).
-        """
+        """Remove usuário (Soft Delete ou Hard Delete)."""
         user = UserService.get_user_by_id(db, user_id)
         
         if user.id == current_user.id:
@@ -159,15 +241,9 @@ class UserService:
                 detail="Não é possível deletar sua própria conta"
             )
         
-        # --- MODO 1: SOFT DELETE (Recomendado para histórico) ---
         user.is_active = False
         db.commit()
-        db.refresh(user) # Necessário para retornar o objeto atualizado
-        
-        # --- MODO 2: HARD DELETE (Apaga mesmo) ---
-        # db.delete(user)
-        # db.commit()
-        
+        db.refresh(user)
         return user
     
     @staticmethod
@@ -176,7 +252,6 @@ class UserService:
         total_users = db.query(User).count()
         active_users = db.query(User).filter(User.is_active == True).count()
         
-        # Agregação por cargo
         roles_count = db.query(User.role, func.count(User.role)).group_by(User.role).all()
         roles_dict = {role.value: count for role, count in roles_count}
         

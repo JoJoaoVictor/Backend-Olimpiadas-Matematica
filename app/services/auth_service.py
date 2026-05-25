@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Tuple, Optional
 from sqlalchemy.orm import Session
 import secrets
+from app.models.user_profile import UserProfile
 
 # Google Identity Services (JWT)
 from google.oauth2 import id_token
@@ -50,16 +51,24 @@ class AuthService:
     @staticmethod
     def register_user(db: Session, user_data: UserRegister) -> User:
         """
-        Registra um novo usuário com email e senha.
+        Registra um novo usuário com email e senha E cria o perfil vinculado.
+        Tudo em uma única transação no banco.
         """
-        # Verifica se email já está em uso
+        # 1. Verifica se email já está em uso
         existing_user = db.query(User).filter(User.email == user_data.email).first()
         if existing_user:
             raise ConflictException("Email já está em uso")
 
-        # Token para verificação de email (caso implemente futuramente)
+        # 2. Verifica se o CPF já existe (Validação Proativa)
+        if hasattr(user_data, 'cpf') and user_data.cpf:
+            existing_cpf = db.query(UserProfile).filter(UserProfile.cpf == user_data.cpf).first()
+            if existing_cpf:
+                raise ConflictException("Este CPF já está cadastrado no sistema")
+
+        # Token para verificação de email
         email_token = secrets.token_urlsafe(32)
 
+        # 3. Prepara a Entidade Usuário (AQUI usamos o seu get_password_hash corretamente)
         user = User(
             name=user_data.name,
             email=user_data.email,
@@ -71,10 +80,28 @@ class AuthService:
         )
 
         db.add(user)
-        db.commit()
-        db.refresh(user)
+        db.flush() # O flush cria o ID do usuário, mas NÃO commita ainda!
 
-        return user
+        # 4. Prepara a Entidade Perfil vinculada ao ID do novo usuário
+        profile = UserProfile(
+            user_id   = user.id,
+            cpf       = user_data.cpf       or None,
+            telefone  = user_data.telefone  or None,
+            campus    = user_data.campus    or None,
+            cidade    = user_data.cidade    or None,
+            matricula = user_data.matricula or None,
+            curso     = user_data.curso     or None,
+        )
+        db.add(profile)
+
+        # 5. Salva TUDO de uma vez só no banco (Commit Único)
+        try:
+            db.commit()
+            db.refresh(user)
+            return user
+        except Exception as e:
+            db.rollback() # Se falhar, desfaz tudo e não deixa lixo no banco
+            raise ConflictException("Erro de integridade ao salvar usuário e perfil.")
 
     # =========================
     # LOGIN TRADICIONAL

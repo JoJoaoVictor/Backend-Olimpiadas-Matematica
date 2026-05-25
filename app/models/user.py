@@ -21,7 +21,7 @@ class UserRole(str, enum.Enum):
 
 class User(BaseModel):
     __tablename__ = "users"
-    profile = relationship("UserProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    
     # ==========================
     # INFORMAÇÕES BÁSICAS
     # ==========================
@@ -41,6 +41,7 @@ class User(BaseModel):
     role              = Column(Enum(UserRole), default=UserRole.PROFESSOR, nullable=False)
     is_active         = Column(Boolean, default=True,  nullable=False)
     is_email_verified = Column(Boolean, default=False, nullable=False)
+    accepted_terms    = Column(Boolean, default=False, nullable=False) 
 
     # ==========================
     # SEGURANÇA E LOGIN
@@ -61,12 +62,6 @@ class User(BaseModel):
     # ==========================
 
     # ── questions ────────────────────────────────────────────────────────────
-    # ANTES: relationship("Question", back_populates="author")
-    # PROBLEMA: com a nova coluna reviewed_by_id também apontando para users.id,
-    # o SQLAlchemy não sabe qual das duas FKs usar para este relacionamento e
-    # levanta AmbiguousForeignKeysError ao iniciar o servidor.
-    # CORREÇÃO: foreign_keys explícito usando string — resolve a ambiguidade
-    # sem precisar importar Question diretamente (evita import circular).
     questions = relationship(
         "Question",
         foreign_keys="Question.author_id",
@@ -74,9 +69,6 @@ class User(BaseModel):
     )
 
     # ── reviewed_questions ────────────────────────────────────────────────────
-    # NOVO: questões que este usuário revisou (reviewed_by_id = self.id).
-    # Usado pelo question_service para filtrar a listagem do REVISOR:
-    # cada revisor vê apenas as questões que ele próprio tocou.
     reviewed_questions = relationship(
         "Question",
         foreign_keys="Question.reviewed_by_id",
@@ -87,7 +79,6 @@ class User(BaseModel):
     exams = relationship("Exam", back_populates="author")
 
     # ── notifications ─────────────────────────────────────────────────────────
-    # Mantido exatamente como estava no seu arquivo original.
     notifications = relationship(
         "Notification",
         foreign_keys="Notification.user_id",
@@ -95,9 +86,6 @@ class User(BaseModel):
     )
 
     # ── profile ───────────────────────────────────────────────────────────────
-    # Relacionamento 1:1 com UserProfile (campus, CPF, matrícula, etc).
-    # uselist=False garante que user.profile retorne um objeto, não uma lista.
-    # cascade="all, delete-orphan" apaga o perfil quando o usuário for removido.
     profile = relationship(
         "UserProfile",
         back_populates="user",

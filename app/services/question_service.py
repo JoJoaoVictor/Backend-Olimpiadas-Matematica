@@ -34,8 +34,9 @@ class QuestionService:
             raise NotFoundException("Grau educacional não encontrado")
 
         question = Question(
-            **question_data.dict(exclude={'image_id'}),
+            **question_data.dict(exclude={'image_id', 'professor_name', 'author_id'}),
             author_id=current_user.id,
+            professor_name=current_user.name,
             image_id=question_data.image_id
         )
 
@@ -65,12 +66,11 @@ class QuestionService:
         user_role = current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
 
         if user_role == "STUDENT":
-            # ALTERAÇÃO 1: STUDENT vê apenas as próprias questões.
-            # Recebe lista vazia se não criou nenhuma — sem 403.
+            # STUDENT vê apenas as próprias questões.
             query = query.filter(Question.author_id == current_user.id)
 
         elif user_role == "PROFESSOR":
-            # ALTERAÇÃO 2: PROFESSOR vê todas as questões, igual ao ADMIN.
+            # PROFESSOR vê todas as questões, igual ao ADMIN.
             pass
 
         elif user_role == "REVISOR":
@@ -166,21 +166,19 @@ class QuestionService:
     ) -> Question:
         """Atualiza questão."""
         question = QuestionService.get_question_by_id(db, question_id, current_user)
-
         user_role_str = current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
 
+        # Validação de permissões baseada na String da Role adaptada
         if user_role_str == "STUDENT":
-            # STUDENT só edita a própria questão e apenas se estiver pendente (category_id != 2)
             if question.author_id != current_user.id:
                 raise ForbiddenException("Sem permissão para editar esta questão")
             if question.category_id == 2:
                 raise ForbiddenException("Questões aprovadas não podem ser editadas")
-        elif current_user.role == UserRole.PROFESSOR:
-            if question.author_id != current_user.id:
-                raise ForbiddenException("PROFESSOR só pode editar suas próprias questões")
-        elif current_user.role == UserRole.REVISOR:
+        elif user_role_str == "PROFESSOR":
+            pass # Permite que o professor edite qualquer questão
+        elif user_role_str == "REVISOR":
             pass
-        elif current_user.role != UserRole.ADMIN:
+        elif user_role_str != "ADMIN":
             raise ForbiddenException("Sem permissão para editar esta questão")
 
         update_data = question_data.dict(exclude_unset=True)
@@ -194,11 +192,12 @@ class QuestionService:
 
         should_notify_revision = False
 
-        if current_user.role in [UserRole.REVISOR, UserRole.ADMIN]:
+        if user_role_str in ["REVISOR", "ADMIN"]:
             if update_data.get('category_id') == 2:
                 update_data['reviewed_by_id'] = current_user.id
 
             if question.author_id != current_user.id:
+                # Verifica se houve alteração real de conteúdo além do ID do revisor
                 has_content_changes = any(
                     field not in ['reviewed_by_id']
                     for field in update_data.keys()
@@ -206,28 +205,31 @@ class QuestionService:
                 if has_content_changes:
                     should_notify_revision = True
 
+        # Aplica as alterações no objeto do banco
         for field, value in update_data.items():
             setattr(question, field, value)
 
         db.commit()
         db.refresh(question)
 
-        if current_user.role in [UserRole.REVISOR, UserRole.ADMIN]:
-            if question.author_id != current_user.id:
-                if should_notify_revision:
-                    NotificationService.create_notification(
-                        db=db,
-                        user_id=question.author_id,
-                        notification_type=NotificationType.QUESTION_REVISED,
-                        title="Sua questão foi revisada",
-                        message=f"A questão '{question.name}' foi revisada por {current_user.name}",
-                        entity_type=EntityType.QUESTION,
-                        entity_id=question.id,
-                        triggered_by_user_id=current_user.id
-                    )
+        # ── DISPARO DE NOTIFICAÇÕES SEGURO (Prevenção de NotNullViolation) ────
+        # Só tenta notificar se a questão possuir um autor e o autor não for quem está editando
+        if question.author_id is not None and question.author_id != current_user.id:
+            # 1. Notificação de Revisão de Conteúdo
+            if should_notify_revision:
+                NotificationService.create_notification(
+                    db=db,
+                    user_id=question.author_id,
+                    notification_type=NotificationType.QUESTION_REVISED,
+                    title="Sua questão foi revisada",
+                    message=f"A questão '{question.name}' foi revisada por {current_user.name}",
+                    entity_type=EntityType.QUESTION,
+                    entity_id=question.id,
+                    triggered_by_user_id=current_user.id
+                )
 
-        if 'reviewer_comments' in update_data and update_data['reviewer_comments']:
-            if question.author_id != current_user.id:
+            # 2. Notificação de Comentários inseridos
+            if 'reviewer_comments' in update_data and update_data['reviewer_comments']:
                 NotificationService.create_notification(
                     db=db,
                     user_id=question.author_id,
@@ -239,8 +241,8 @@ class QuestionService:
                     triggered_by_user_id=current_user.id
                 )
 
-        if 'category_id' in update_data and update_data['category_id'] == 2:
-            if question.author_id != current_user.id:
+            # 3. Notificação de Aprovação de Questão
+            if 'category_id' in update_data and update_data['category_id'] == 2:
                 NotificationService.create_notification(
                     db=db,
                     user_id=question.author_id,
@@ -262,21 +264,19 @@ class QuestionService:
     ) -> Question:
         """Remove questão."""
         question = QuestionService.get_question_by_id(db, question_id, current_user)
-
         user_role_str = current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
 
         if user_role_str == "STUDENT":
-            # STUDENT só deleta a própria questão e apenas se estiver pendente
             if question.author_id != current_user.id:
                 raise ForbiddenException("Sem permissão para deletar esta questão")
             if question.category_id == 2:
                 raise ForbiddenException("Questões aprovadas não podem ser deletadas pelo autor")
-        elif current_user.role == UserRole.PROFESSOR:
+        elif user_role_str == "PROFESSOR":
             if question.author_id != current_user.id:
                 raise ForbiddenException("PROFESSOR só pode deletar suas próprias questões")
-        elif current_user.role == UserRole.REVISOR:
+        elif user_role_str == "REVISOR":
             pass
-        elif current_user.role != UserRole.ADMIN:
+        elif user_role_str != "ADMIN":
             raise ForbiddenException("Sem permissão para deletar esta questão")
 
         from app.models.associations import ExamQuestion
@@ -301,30 +301,45 @@ class QuestionService:
     ) -> Question:
         """Aprova questão (REVISOR e ADMIN)."""
         question = QuestionService.get_question_by_id(db, question_id, current_user)
-
         user_role = current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+        
         if user_role not in ["ADMIN", "REVISOR"]:
             raise ForbiddenException("Sem permissão para aprovar questões")
 
         question.category_id = 2
         question.reviewed_by_id = current_user.id
 
-        from app.models.notification import Notification
+        # Só cria registros de notificação se houver um autor válido
+        if question.author_id is not None:
+            from app.models.notification import Notification
 
-        nova_notificacao = Notification(
-            user_id=question.author_id,
-            triggered_by_user_id=current_user.id,
-            type="QUESTION_REVIEWED",
-            title="Questão Avaliada",
-            message=f"Sua questão '{question.name}' foi avaliada e atualizada pelo revisor.",
-            entity_type="question",
-            entity_id=question.id,
-            is_read=False
-        )
+            nova_notificacao = Notification(
+                user_id=question.author_id,
+                triggered_by_user_id=current_user.id,
+                type="QUESTION_REVIEWED",
+                title="Questão Avaliada",
+                message=f"Sua questão '{question.name}' foi avaliada e atualizada pelo revisor.",
+                entity_type="question",
+                entity_id=question.id,
+                is_read=False
+            )
+            db.add(nova_notificacao)
+            
+            if question.author_id != current_user.id:
+                NotificationService.create_notification(
+                    db=db,
+                    user_id=question.author_id,
+                    notification_type=NotificationType.QUESTION_APPROVED,
+                    title="Sua questão foi aprovada!",
+                    message=f"A questão '{question.name}' foi aprovada!",
+                    entity_type=EntityType.QUESTION,
+                    entity_id=question.id,
+                    triggered_by_user_id=current_user.id
+                )
 
-        db.add(nova_notificacao)
         db.commit()
         db.refresh(question)
+        return question
 
         if question.author_id != current_user.id:
             NotificationService.create_notification(

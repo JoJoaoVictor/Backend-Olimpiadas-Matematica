@@ -26,8 +26,7 @@ class AdvancedPDFGenerator:
     _BLANK_PAGE_TEXT_THRESHOLD = 50
 
     @staticmethod
-    def _remove_blank_pages(pdf_bytes: bytes) -> bytes:
-        # ... mantenha como está ...
+    def _remove_blank_pages(pdf_bytes: bytes) -> bytes:    
         if PdfReader is None or PdfWriter is None:
             return pdf_bytes
         try:
@@ -56,7 +55,6 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _sanitize_latex(text: str) -> str:
-        # ... mantenha como está ...
         if not text:
             return ""
         if text.startswith('\ufeff'):
@@ -94,7 +92,6 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _load_static_img_base64(filename: str) -> str:
-        # ... mantenha como está ...
         try:
             base_path = Path(__file__).resolve().parent.parent.parent / "static" / "img" / filename
             if base_path.exists():
@@ -107,7 +104,6 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _resolve_image(custom_value: Optional[str], default_filename: str) -> str:
-        # ... mantenha como está ...
         if custom_value:
             if custom_value.startswith("data:"):
                 return custom_value
@@ -166,7 +162,6 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _get_image_class_for_question(q: Any) -> str:
-        # ... mantenha como está, sem alterações ...
         role = AdvancedPDFGenerator._get_field(q, "image_role")
         if role and isinstance(role, str):
             role = role.upper()
@@ -199,7 +194,6 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _get_image_style_attributes(q: Any) -> str:
-        # ... mantenha como está ...
         images_field = AdvancedPDFGenerator._get_field(q, "images")
         if images_field:
             if isinstance(images_field, list) and len(images_field) > 0:
@@ -213,7 +207,6 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _build_exam_title(fase: str, anos: List[str], year: int = None) -> str:
-        # ... mantenha como está, sem alterações ...
         if year is None:
             year = datetime.now().year
 
@@ -280,10 +273,12 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _parse_alternatives(question: Any) -> Dict[str, str]:
-        # ... mantenha como está ...
         alt_raw = AdvancedPDFGenerator._get_field(question, "alternatives")
+        
         if isinstance(alt_raw, dict):
-            return {k: str(v).strip() if v else "" for k, v in alt_raw.items()}
+            # Transforma a chave k em minúscula: k.lower()
+            return {k.lower(): str(v).strip() if v else "" for k, v in alt_raw.items()}
+            
         if isinstance(alt_raw, str):
             if not alt_raw.strip():
                 return {}
@@ -294,27 +289,34 @@ class AdvancedPDFGenerator:
                 clean = clean.replace('\\"', '"')
                 loaded = json.loads(clean)
                 if isinstance(loaded, dict):
-                    return {k: str(v).strip() if v else "" for k, v in loaded.items()}
+                    # Transforma a chave k em minúscula: k.lower()
+                    return {k.lower(): str(v).strip() if v else "" for k, v in loaded.items()}
                 if isinstance(loaded, str):
                     try:
                         parsed = json.loads(loaded)
-                        return {k: str(v).strip() if v else "" for k, v in parsed.items()}
+                        # Transforma a chave k em minúscula: k.lower()
+                        return {k.lower(): str(v).strip() if v else "" for k, v in parsed.items()}
                     except: pass
             except: pass
+            
             lines = alt_raw.split('\n')
             alt_dict = {}
             for line in lines:
                 match = re.match(r'^([a-e])\)\s*(.*)$', line.strip(), re.IGNORECASE)
                 if match:
-                    key = match.group(1).upper()
+                    # Alterado aqui de .upper() para .lower()
+                    key = match.group(1).lower()
                     value = match.group(2).strip()
                     alt_dict[key] = value
             if alt_dict:
                 return alt_dict
+                
             pattern = r'["\']?([A-E])["\']?\s*:\s*["\']?([^,"\']+)["\']?'
             matches = re.findall(pattern, alt_raw, re.IGNORECASE)
             if matches:
-                return {key.upper(): value.strip() for key, value in matches}
+                # Alterado aqui de key.upper() para key.lower()
+                return {key.lower(): value.strip() for key, value in matches}
+                
         return {}
 
     @staticmethod
@@ -330,7 +332,6 @@ class AdvancedPDFGenerator:
 
     @staticmethod
     def _render_questions_html(questions: List[Any], include_resolution: bool = False) -> str:
-        # ... mantenha como está ...
         html_parts = []
         for i, q in enumerate(questions, 1):
             raw_stmt = (
@@ -345,27 +346,53 @@ class AdvancedPDFGenerator:
             style_attrs = AdvancedPDFGenerator._get_image_style_attributes(q)
             img_html = f'<img src="{q_img_src}" class="question-img {img_class}"{style_attrs} />' if q_img_src else ""
 
-            alts_dict = AdvancedPDFGenerator._parse_alternatives(q)
+            # Captura a flag se a questão deve ocultar as alternativas
+            hide_alts = AdvancedPDFGenerator._get_field(q, "hide_alternatives", False)
+
             alts_html = ""
-            if alts_dict:
-                alts_items = []
-                correct_letter = ""
-                if include_resolution:
-                    correct_alt = (
-                        AdvancedPDFGenerator._get_field(q, "correctAlternative") or
-                        AdvancedPDFGenerator._get_field(q, "correct_alternative") or ""
-                    )
-                    correct_letter = AdvancedPDFGenerator._extract_correct_letter(correct_alt)
-                for key in sorted(alts_dict.keys()):
-                    val = alts_dict[key]
-                    if val:
-                        sanitized = AdvancedPDFGenerator._sanitize_latex(str(val))
-                        sanitized = sanitized.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                        if include_resolution and key.upper() == correct_letter.upper():
-                            alts_items.append(f'<span class="alt-item-red">{key}) {sanitized}</span>')
-                        else:
-                            alts_items.append(f'<span class="alt-item">{key}) {sanitized}</span>')
-                alts_html = f'<div class="alternativas">{" ".join(alts_items)}</div>'
+            # Se hide_alts for verdadeiro, injeta o espaço de "Resolução:" adaptado para discursivas
+            if hide_alts:
+                # Não exibe o bloco padrão no modo gabarito resolvido para evitar redundância visual pesada
+                if not include_resolution:
+                    alts_html = """
+                    <div class="resolucao-aluno-box" style="margin-top: 3mm; margin-bottom: 2mm; width: 100%;">
+                        <p style="font-family: 'Arial', serif; font-size: 13pt; font-weight: bold; color: #444; margin-bottom: 2mm;">Resolução:</p>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
+                    </div>
+                    """
+            else:
+                # Fluxo Normal de Questões com Múltipla Escolha
+                alts_dict = AdvancedPDFGenerator._parse_alternatives(q)
+                if alts_dict:
+                    alts_items = []
+                    correct_letter = ""
+                    if include_resolution:
+                        correct_alt = (
+                            AdvancedPDFGenerator._get_field(q, "correctAlternative") or
+                            AdvancedPDFGenerator._get_field(q, "correct_alternative") or ""
+                        )
+                        correct_letter = AdvancedPDFGenerator._extract_correct_letter(correct_alt)
+                    for key in sorted(alts_dict.keys()):
+                        val = alts_dict[key]
+                        if val:
+                            sanitized = AdvancedPDFGenerator._sanitize_latex(str(val))
+                            sanitized = sanitized.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                            if include_resolution and key.upper() == correct_letter.upper():
+                                alts_items.append(f'<span class="alt-item-red">{key.lower()}) {sanitized}</span>')
+                            else:
+                                alts_items.append(f'<span class="alt-item">{key.lower()}) {sanitized}</span>')
+                    alts_html = f'<div class="alternativas">{" ".join(alts_items)}</div>'
 
             resolution_html = ""
             if include_resolution:

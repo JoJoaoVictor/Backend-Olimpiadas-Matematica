@@ -68,6 +68,7 @@ class UserResponse(TimestampedSchema):
     last_login: Optional[datetime] = None
     has_password: bool
     profile: Optional[ProfileResponse] = None
+    accepted_terms: bool
 
     class Config:
         from_attributes= True  # Permite ler dados direto do objeto SQLAlchemy

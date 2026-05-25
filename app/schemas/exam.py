@@ -5,7 +5,6 @@ from app.schemas.base import TimestampedSchema
 from app.schemas.user import UserResponse
 from app.schemas.question import QuestionResponse
 
-
 class ExamBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     fase: str = Field(..., min_length=1, max_length=50)
@@ -40,7 +39,7 @@ class ExamCreate(ExamBase):
 
 
 class ExamUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=5, max_length=200)
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
     fase: Optional[str] = Field(None, min_length=1, max_length=50)
     anos: Optional[List[str]] = Field(None, min_items=1)
     status: Optional[ExamStatus] = None
@@ -55,18 +54,21 @@ class ExamUpdate(BaseModel):
 
 
 class ExamQuestionUpdate(BaseModel):
-    question_ids: List[int] = Field(..., min_items=1, max_items=50)
-
-    @validator("question_ids")
-    def validate_question_ids(cls, v):
-        if len(set(v)) != len(v):
-            raise ValueError("IDs das questões não podem estar duplicados")
-        return v
+    #  Representa uma única questão na lista, então é apenas 'question_id' (int)
+    question_id: int = Field(..., gt=0)
+    order_index: Optional[int] = 0
+    
+    # A flag que o React envia
+    hide_alternatives: Optional[bool] = False
 
 
 class ExamQuestionResponse(BaseModel):
     question: QuestionResponse
     order_index: int
+    
+    #  A flag que o Backend devolve pro React para manter o botão no estado correto
+    hide_alternatives: bool = False 
+    
     model_config = {"from_attributes": True}
 
 
