@@ -39,7 +39,7 @@ async def list_questions(
     # Agora: get_any_staff_user (bloqueia STUDENT na listagem)
     # CORRIGIDO: Alterado de get_current_user para get_any_staff_user conforme seu comentário
     
-    current_user: User = Depends(get_any_staff_user),
+    current_user: User = Depends(get_current_user),  # Permite que qualquer usuário autenticado acesse a listagem, mas o service vai filtrar o que cada um pode ver
     db: Session = Depends(get_db)
 ):
     """Lista questões com filtros."""

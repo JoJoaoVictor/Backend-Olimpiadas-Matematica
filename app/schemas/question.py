@@ -81,6 +81,8 @@ class QuestionResponse(QuestionBase, TimestampedSchema):
     image: Optional[ImageResponse] = None
     rendered_formula_url: Optional[str] = None
     is_applied: bool
+    author_campus: Optional[str] = None
+    author_cidade: Optional[str] = None
     
     model_config = {
         "from_attributes": True

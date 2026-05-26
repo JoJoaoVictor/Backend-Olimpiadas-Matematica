@@ -25,7 +25,7 @@ class QuestionService:
         question_data: QuestionCreate,
         current_user: User
     ) -> Question:
-        """Cria nova questão."""
+        """Cria nova questão salvando o snapshot do autor e localização."""
         category = db.query(Category).filter(Category.id == question_data.category_id).first()
         if not category:
             raise NotFoundException("Categoria não encontrada")
@@ -34,10 +34,20 @@ class QuestionService:
         if not grau:
             raise NotFoundException("Grau educacional não encontrado")
 
+        # CAPTURA DO SNAPSHOT: Busca dados do perfil do usuário logado
+        # Usamos getattr por segurança para o caso de o perfil não estar carregado
+        user_profile = getattr(current_user, "profile", None)
+        campus_atual = user_profile.campus if user_profile else None
+        cidade_atual = user_profile.cidade if user_profile else None
+
         question = Question(
-            **question_data.dict(exclude={'image_id', 'professor_name', 'author_id'}),
+            **question_data.dict(exclude={
+                'image_id', 'professor_name', 'author_id', 'author_campus', 'author_cidade'
+            }),
             author_id=current_user.id,
-            professor_name=current_user.name,
+            professor_name=current_user.name,   
+            author_campus=campus_atual,       
+            author_cidade=cidade_atual,         
             image_id=question_data.image_id
         )
 

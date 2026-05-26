@@ -21,6 +21,9 @@ class Question(BaseModel):
 
     name           = Column(String(200), nullable=False, index=True)
     professor_name = Column(String(100), nullable=False)
+    
+    author_campus  = Column(String(100), nullable=True)
+    author_cidade  = Column(String(100), nullable=True)
 
     serie_ano        = Column(String(50),  nullable=False, index=True)
     phase_level      = Column(String(50),  nullable=False, index=True)
