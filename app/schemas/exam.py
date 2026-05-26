@@ -54,29 +54,26 @@ class ExamUpdate(BaseModel):
 
 
 class ExamQuestionUpdate(BaseModel):
-    #  Representa uma única questão na lista, então é apenas 'question_id' (int)
     question_id: int = Field(..., gt=0)
     order_index: Optional[int] = 0
-    
-    # A flag que o React envia
     hide_alternatives: Optional[bool] = False
 
 
 class ExamQuestionResponse(BaseModel):
     question: QuestionResponse
     order_index: int
-    
-    #  A flag que o Backend devolve pro React para manter o botão no estado correto
     hide_alternatives: bool = False 
     
     model_config = {"from_attributes": True}
 
 
 class ExamResponse(ExamBase, TimestampedSchema):
-    # author pode ser None se o usuário foi deletado (author_id = NULL)
     author: Optional[UserResponse] = None
-    # author_name preserva o nome mesmo após deleção do autor
     author_name: str = ""
+    
+    reviewed_by_id: Optional[int] = None
+    reviewed_by: Optional[UserResponse] = None
+    
     total_questions: int
     questions: List[ExamQuestionResponse] = []
     ano: Optional[int] = None

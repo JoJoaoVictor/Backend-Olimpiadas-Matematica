@@ -1,6 +1,6 @@
 """Rotas de upload de imagens."""
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -12,9 +12,9 @@ from app.core.exceptions import ValidationException
 
 router = APIRouter()
 
- 
 @router.post("/upload", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def upload_image(
+    background_tasks: BackgroundTasks, # 2. Injete o BackgroundTasks aqui
     file: UploadFile = File(...),
     description: str = None,
     current_user: User = Depends(get_current_user),
@@ -22,7 +22,12 @@ async def upload_image(
 ):
     """Upload de imagem."""
     try:
+        # Faz o upload da imagem normalmente
         image = ImageService.upload_image(db, file, current_user, description)
+        
+        # 3. Adiciona a tarefa de limpeza à fila do servidor
+        # O FastAPI vai rodar isso silenciosamente logo após enviar o 'return' abaixo
+        background_tasks.add_task(ImageService.clean_orphan_images)
         
         return {
             "success": True,

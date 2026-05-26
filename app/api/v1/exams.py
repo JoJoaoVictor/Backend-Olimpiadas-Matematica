@@ -3,6 +3,7 @@ from sqlalchemy.orm import joinedload
 import logging
 from typing import List, Optional
 from io import BytesIO
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import Response, StreamingResponse
@@ -36,8 +37,6 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-from pydantic import BaseModel
-
 class ExamQuestionToggleAlternatives(BaseModel):
     hide_alternatives: bool
 
@@ -63,7 +62,6 @@ async def list_exams(
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
-
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_exam(
     exam_data: ExamCreate,
@@ -82,7 +80,26 @@ async def create_exam(
         logger.info(f"Erro ao criar prova: {e.detail}")
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
-
+@router.get("/stats/summary", response_model=dict)
+async def get_exam_stats_summary(
+    current_user: User = Depends(get_professor_or_revisor_user),
+    db: Session = Depends(get_db)
+):
+    """Retorna estatísticas de provas filtradas pelas permissões do usuário."""
+    try:
+        # Repassa o usuário atual para o serviço aplicar a blindagem do Revisor
+        stats = ExamService.get_exam_stats(db, current_user)
+        return {
+            "success": True,
+            "data": {"stats": stats}
+        }
+    except Exception as e:
+        logger.error(f"Erro ao obter estatísticas de provas: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Erro ao obter estatísticas"
+        )
+    
 @router.post("/generate_pdf")
 async def generate_pdf_from_payload(
     payload: dict,
@@ -187,6 +204,7 @@ async def generate_pdf_from_payload(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro interno ao gerar PDF: {str(e)}"
         )
+    
 @router.get("/{exam_id}", response_model=dict)
 async def get_exam(
     exam_id: int,
@@ -199,7 +217,6 @@ async def get_exam(
         return {"success": True, "data": {"exam": ExamResponse.from_orm(exam)}}
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
-
 
 @router.patch("/{exam_id}", response_model=dict)
 async def update_exam(
@@ -217,7 +234,6 @@ async def update_exam(
         }
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
-
 
 @router.patch("/{exam_id}/questions/{question_id}", response_model=dict)
 async def toggle_exam_question_alternatives(
@@ -293,7 +309,6 @@ async def update_exam_questions(
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
-
 @router.post("/{exam_id}/layout", response_model=dict)
 async def update_exam_layout(
     exam_id: int,
@@ -327,7 +342,6 @@ async def update_exam_layout(
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
-
 @router.delete("/{exam_id}", response_model=dict)
 async def delete_exam(
     exam_id: int,
@@ -339,7 +353,6 @@ async def delete_exam(
         return {"success": True, "message": "Prova removida com sucesso"}
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
-
 
 @router.patch("/{exam_id}/status", response_model=dict)
 async def change_exam_status(
@@ -357,7 +370,6 @@ async def change_exam_status(
         }
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
-
 
 @router.get("/{exam_id}/pdf")
 async def generate_exam_pdf(

@@ -37,9 +37,9 @@ async def list_questions(
     author_id: int = Query(None, description="Filtro por autor"),
     # ── ALTERAÇÃO 1 ──────────────────────────────────────────────────────────
     # Agora: get_any_staff_user (bloqueia STUDENT na listagem)
-    # Impacto: estudantes não conseguem listar o banco de questões via API,
-    # mesmo que tentem acessar diretamente pela URL.
-    current_user: User = Depends(get_current_user),
+    # CORRIGIDO: Alterado de get_current_user para get_any_staff_user conforme seu comentário
+    
+    current_user: User = Depends(get_any_staff_user),
     db: Session = Depends(get_db)
 ):
     """Lista questões com filtros."""
@@ -135,7 +135,7 @@ async def update_question(
 
         return {
             "success": True,
-            "message": "Questão atualizada com sucesso",
+            "message": "Questão updated com sucesso",
             "data": {"question": QuestionResponse.from_orm(question)}
         }
 
@@ -189,12 +189,15 @@ async def approve_question(
 
 @router.get("/stats/summary", response_model=dict)
 async def get_question_stats(
-    current_user: User = Depends(get_admin_user),
+    # ALTERAÇÃO: Mudado de get_admin_user para get_any_staff_user para permitir que 
+    # Professores e Revisores também vejam o painel de estatísticas com seus dados filtrados.
+    current_user: User = Depends(get_any_staff_user),
     db: Session = Depends(get_db)
 ):
-    """Estatísticas de questões. Apenas ADMIN."""
+    """Estatísticas de questões filtradas por permissão."""
     try:
-        stats = QuestionService.get_question_stats(db)
+        # ALTERAÇÃO: Agora repassa o current_user para a camada de serviço
+        stats = QuestionService.get_question_stats(db, current_user)
 
         return {
             "success": True,

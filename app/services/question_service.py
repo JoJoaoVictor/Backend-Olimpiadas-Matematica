@@ -3,6 +3,7 @@
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, desc
+from sqlalchemy import or_, and_, desc
 
 from app.models.question import Question, DifficultyLevel
 from app.models.category import Category
@@ -55,6 +56,8 @@ class QuestionService:
         """
         Lista questões com filtros, paginação e visibilidade por role.
         """
+        from sqlalchemy import or_, and_, desc # 🌟 Certifique-se de que and_ está importado
+
         query = db.query(Question).options(
             joinedload(Question.category),
             joinedload(Question.grau),
@@ -74,10 +77,25 @@ class QuestionService:
             pass
 
         elif user_role == "REVISOR":
-            # ABA "Aprovadas" (category_id == 2) → apenas as que ESSE REVISOR aprovou
-            # ABA "Pendentes" (category_id == 1) → todas as questões pendentes
+            #  TRAVA 1: Revisor NUNCA vê questões "Aplicadas" (category_id == 3)
+            query = query.filter(Question.category_id != 3)
+
+            # TRAVA 2: Se estiver na aba Aprovadas, vê apenas as que ele aprovou
             if filters.category_id == 2:
                 query = query.filter(Question.reviewed_by_id == current_user.id)
+            
+            # TRAVA 3: Se estiver vendo "Todas as Questões" (sem filtro de aba)
+            # Ele só pode ver as Pendentes (1) OU as Aprovadas (2) por ele mesmo
+            elif not filters.category_id:
+                query = query.filter(
+                    or_(
+                        Question.category_id == 1, # Todas as Pendentes
+                        and_(
+                            Question.category_id == 2, 
+                            Question.reviewed_by_id == current_user.id
+                        ) # Apenas Aprovadas por ele
+                    )
+                )
 
         # ADMIN: sem filtro adicional — vê tudo
 
@@ -154,6 +172,21 @@ class QuestionService:
 
         if not question:
             raise NotFoundException("Questão não encontrada")
+
+        # ── TRAVAS DE SEGURANÇA POR ROLE ──────────────────────────────────────
+        user_role = current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+
+        if user_role == "STUDENT" and question.author_id != current_user.id:
+            raise ForbiddenException("Você não tem permissão para acessar esta questão")
+
+        elif user_role == "REVISOR":
+            # TRAVA 1: Revisor nunca vê questões Aplicadas (category_id == 3)
+            if question.category_id == 3:
+                raise ForbiddenException("Revisores não têm permissão para visualizar questões aplicadas")
+            
+            # TRAVA 2: Revisor só vê questões Aprovadas (category_id == 2) se ele mesmo aprovou
+            if question.category_id == 2 and getattr(question, 'reviewed_by_id', None) != current_user.id:
+                raise ForbiddenException("Revisores só podem visualizar questões aprovadas por eles mesmos")
 
         return question
 
@@ -356,29 +389,45 @@ class QuestionService:
         return question
 
     @staticmethod
-    def get_question_stats(db: Session) -> dict:
+    def get_question_stats(db: Session, current_user: User) -> dict: # 🌟 Adicionado current_user
         """Estatísticas de questões."""
-        total_questions = db.query(Question).count()
+        from sqlalchemy import or_, and_
+
+        # 1. Cria a query base dependendo do cargo
+        base_query = db.query(Question)
+        user_role = current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role)
+
+        if user_role == "STUDENT":
+            base_query = base_query.filter(Question.author_id == current_user.id)
+            
+        elif user_role == "REVISOR":
+            # 🌟 O Revisor não contabiliza as Aplicadas (3) e nem as Aprovadas (2) por outros
+            base_query = base_query.filter(
+                or_(
+                    Question.category_id == 1, # Pendentes
+                    and_(
+                        Question.category_id == 2, 
+                        Question.reviewed_by_id == current_user.id
+                    ) # Aprovadas por ele
+                )
+            )
+
+        # 2. Usa a base_query blindada para fazer todas as contagens
+        total_questions = base_query.count()
 
         categories_stats = {}
         for category in db.query(Category).all():
-            count = db.query(Question).filter(
-                Question.category_id == category.id
-            ).count()
+            count = base_query.filter(Question.category_id == category.id).count()
             categories_stats[category.name] = count
 
         difficulty_stats = {}
         for level in DifficultyLevel:
-            count = db.query(Question).filter(
-                Question.difficulty_level == level
-            ).count()
+            count = base_query.filter(Question.difficulty_level == level).count()
             difficulty_stats[f"nivel_{level.value}"] = count
 
         grau_stats = {}
         for grau in db.query(Grau).all():
-            count = db.query(Question).filter(
-                Question.grau_id == grau.id
-            ).count()
+            count = base_query.filter(Question.grau_id == grau.id).count()
             grau_stats[grau.name] = count
 
         return {

@@ -7,6 +7,10 @@ from pathlib import Path
 from PIL import Image, ImageOps
 import shutil
 
+from app.database import SessionLocal
+from datetime import datetime, timedelta
+from app.models.question import Question # 🌟 Precisamos importar o modelo de Questão
+
 from app.models.image import Image as ImageModel
 from app.models.user import User
 from app.core.config import settings
@@ -135,8 +139,6 @@ class ImageService:
             raise ValidationException(f"Erro no processamento da imagem: {str(e)}")
     
     @staticmethod
-   
-    @staticmethod
     def delete_image(db, image_id: int, current_user: User) -> bool:
         """Remove imagem e arquivos."""
         image = db.query(ImageModel).filter(ImageModel.id == image_id).first()
@@ -158,4 +160,48 @@ class ImageService:
         except Exception:
             return False
 
- 
+    @staticmethod
+    def clean_orphan_images() -> None:
+        db = SessionLocal()
+
+        try:
+            # Limite para testes (5 segundos). Depois mude para timedelta(hours=2)
+            time_limit = datetime.utcnow() - timedelta(seconds=5)
+
+            # 1. Pega todos os IDs de imagens que estão sendo usadas em alguma questão
+            used_image_ids = db.query(Question.image_id).filter(Question.image_id.isnot(None)).subquery()
+            
+            # 2. Busca todas as imagens cujo ID *NÃO* está nessa lista e que já passaram do tempo
+            orphans = db.query(ImageModel).filter(
+                ~ImageModel.id.in_(used_image_ids),
+                ImageModel.created_at < time_limit
+            ).all()
+
+            count_deleted = 0
+
+            for image in orphans:
+                try:
+                    # Tenta apagar o arquivo físico no HD
+                    file_path = Path(settings.UPLOAD_PATH) / image.file_path
+                    if file_path.exists():
+                        file_path.unlink()
+                    
+                    # Apaga o registro do banco de dados
+                    db.delete(image)
+                    count_deleted += 1
+
+                except Exception as e:
+                    print(f"⚠️ Erro ao remover o arquivo físico da imagem {image.id}: {str(e)}")
+                    continue 
+
+            # Efetiva as exclusões no banco
+            if count_deleted > 0:
+                db.commit()
+                # Usando print para garantir que apareça no terminal do Uvicorn!
+                print(f"🧹 SUCESSO! Limpeza Automática: {count_deleted} imagens órfãs foram apagadas do banco.")
+
+        except Exception as e:
+            db.rollback()
+            print(f"❌ Erro fatal na limpeza em segundo plano: {str(e)}")
+        finally:
+            db.close()

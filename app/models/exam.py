@@ -33,10 +33,20 @@ class Exam(BaseModel):
     footer_size  = Column(Float, default=100.0, nullable=False)
 
     reviewer_comments = Column(Text, nullable=True)  # Comentários do revisor
+
+    # Referência a quem revisou/aprovou a prova
+    # SET NULL: se o revisor for apagado, o campo fica nulo.
+    reviewed_by_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True
+    )
     
+    # Relação para aceder aos dados do revisor (ex: exam.reviewed_by.name)
+    reviewed_by = relationship("User", foreign_keys=[reviewed_by_id])
+
     # SET NULL: ao deletar o autor, author_id vira NULL mas a prova permanece.
     # O histórico é preservado pelo campo author_name abaixo.
-    
     author_id = Column(
         Integer,
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -48,7 +58,10 @@ class Exam(BaseModel):
     # Garante exibição do nome mesmo após o usuário ser deletado.
     author_name = Column(String(100), nullable=False, default="")
 
-    author = relationship("User", back_populates="exams")
+    # Especificamos foreign_keys aqui para o SQLAlchemy não se confundir
+    # com as duas relações que apontam para a tabela "users"
+    author = relationship("User", foreign_keys=[author_id], back_populates="exams")
+    
     exam_questions = relationship(
         "ExamQuestion",
         back_populates="exam",

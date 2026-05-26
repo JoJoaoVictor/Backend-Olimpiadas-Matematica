@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import desc, or_, func
+from sqlalchemy import desc, or_, and_, func 
 from app.models.category import Category
 from app.schemas.exam import ExamResponse
 from app.models.exam import Exam, ExamStatus
@@ -33,7 +33,6 @@ class ExamService:
     @staticmethod
     def create_exam(db: Session, exam_data: ExamCreate, current_user: User) -> Exam:
         try:
-            # 1. Busca e valida se todas as questões passadas realmente existem
             questions = db.query(Question.id).filter(
                 Question.id.in_(exam_data.question_ids)
             ).all()
@@ -43,7 +42,6 @@ class ExamService:
                 missing_ids = set(exam_data.question_ids) - found_ids
                 raise NotFoundException(f"Questões não encontradas: {list(missing_ids)}")
 
-            # 2. Cria a instância da prova mapeando estritamente os campos existentes no modelo Exam
             exam = Exam(
                 name=exam_data.name,
                 description=exam_data.description,
@@ -52,12 +50,11 @@ class ExamService:
                 anos=exam_data.anos,
                 ano=getattr(exam_data, 'ano', None),
                 total_questions=len(exam_data.question_ids),
-                status=exam_data.status or ExamStatus.RASCUNHO
+                status=exam_data.status or ExamStatus.PENDENTE # 🌟 Corrigido de RASCUNHO para PENDENTE
             )
             db.add(exam)
-            db.flush()  # Executa para gerar o exam.id
+            db.flush()
 
-            # 3. Cria as relações indexadas organizadamente (Sem duplicidade)
             exam_questions = [
                 ExamQuestion(exam_id=exam.id, question_id=qid, order_index=i + 1)
                 for i, qid in enumerate(exam_data.question_ids)
@@ -65,9 +62,7 @@ class ExamService:
             if exam_questions:
                 db.bulk_save_objects(exam_questions)
 
-            # 4. Transiciona com segurança as questões para a categoria "Aplicadas"
             if exam_data.question_ids:
-                # Busca dinamicamente pelo nome cadastrado no banco (ajuste 'Aplicadas' se necessário)
                 category_applied = db.query(Category).filter(
                     func.lower(Category.name) == "aplicadas"
                 ).first()
@@ -95,12 +90,21 @@ class ExamService:
     @staticmethod
     def get_exams(db: Session, filters: ExamFilters, current_user: User) -> Dict[str, Any]:
         query = db.query(Exam).options(
-            selectinload(Exam.author),
+            selectinload(Exam.author).selectinload(User.profile),
             selectinload(Exam.exam_questions).selectinload(ExamQuestion.question)
         )
 
-        if current_user.role == UserRole.PROFESSOR:
-            query = query.filter(Exam.author_id == current_user.id)
+        # ── BLINDAGEM DE LISTAGEM ──────────────────────────────────────────────
+        # REMOVIDA: A trava do PROFESSOR. Agora eles podem ver a lista global.
+        
+        if current_user.role == UserRole.REVISOR:
+            # 🌟 TRAVA REVISOR: Vê provas Pendentes OU Aprovadas por ele mesmo
+            query = query.filter(
+                or_(
+                    Exam.status == ExamStatus.PENDENTE,
+                    and_(Exam.status == ExamStatus.APROVADA, getattr(Exam, 'reviewed_by_id', Exam.author_id) == current_user.id)
+                )
+            )
 
         if filters.search:
             search_term = f"%{filters.search}%"
@@ -141,15 +145,21 @@ class ExamService:
     @staticmethod
     def get_exam_by_id(db: Session, exam_id: int, current_user: User) -> Exam:
         exam = db.query(Exam).options(
-            selectinload(Exam.author),
+            selectinload(Exam.author).selectinload(User.profile),
             selectinload(Exam.exam_questions).selectinload(ExamQuestion.question)
         ).filter(Exam.id == exam_id).first()
 
         if not exam:
             raise NotFoundException("Prova não encontrada")
 
-        if current_user.role == UserRole.PROFESSOR and exam.author_id != current_user.id:
-            raise ForbiddenException("Sem permissão para acessar esta prova")
+        # ── BLINDAGEM DE ACESSO DIRETO ─────────────────────────────────────────
+        # REMOVIDA: A trava do PROFESSOR. Agora eles podem acessar provas de outros.
+
+        if current_user.role == UserRole.REVISOR:
+            if exam.status == ExamStatus.APLICADA:
+                raise ForbiddenException("Revisores não têm permissão para visualizar provas aplicadas")
+            if exam.status == ExamStatus.APROVADA and getattr(exam, 'reviewed_by_id', None) != current_user.id:
+                raise ForbiddenException("Revisores só podem visualizar provas aprovadas por eles mesmos")
 
         return exam
 
@@ -160,7 +170,6 @@ class ExamService:
         if current_user.role == UserRole.PROFESSOR and exam.author_id != current_user.id:
             raise ForbiddenException("Você não tem permissão para editar esta prova")
 
-        # Atualiza os campos básicos
         if exam_data.name is not None:
             exam.name = exam_data.name
         if exam_data.description is not None:
@@ -175,10 +184,13 @@ class ExamService:
             exam.status = exam_data.status
         if hasattr(exam_data, 'reviewer_comments') and exam_data.reviewer_comments is not None:
             exam.reviewer_comments = exam_data.reviewer_comments
+            
+        if current_user.role in [UserRole.REVISOR, UserRole.ADMIN] and exam_data.status == ExamStatus.APROVADA:
+            if hasattr(exam, 'reviewed_by_id'):
+                exam.reviewed_by_id = current_user.id
       
         status_str = str(exam.status).replace("ExamStatus.", "").upper()
         
-        # Busca as questões amarradas a essa prova
         questions_to_update = db.query(ExamQuestion.question_id).filter(
             ExamQuestion.exam_id == exam.id
         ).all()
@@ -186,7 +198,6 @@ class ExamService:
         
         if question_ids:
             if status_str in ["APROVADA", "APLICADA"]:
-                # Avança as questões para "Aplicadas"
                 category_applied = db.query(Category).filter(
                     func.lower(Category.name) == "aplicadas"
                 ).first()
@@ -200,13 +211,12 @@ class ExamService:
                     Question.id.in_(question_ids)
                 ).update({"category_id": category_applied.id}, synchronize_session=False)
                 
-            elif status_str in ["PENDENTE", "RASCUNHO"]:
-                # CAMINHO DE VOLTA COM VERIFICAÇÃO DE SEGURANÇA
+            elif status_str in ["PENDENTE"]:
                 still_in_use = db.query(ExamQuestion.question_id).join(
                     Exam, Exam.id == ExamQuestion.exam_id
                 ).filter(
                     ExamQuestion.question_id.in_(question_ids),
-                    Exam.id != exam.id, # Ignora a prova atual
+                    Exam.id != exam.id, 
                     Exam.status.in_([ExamStatus.APROVADA, ExamStatus.APLICADA])
                 ).all()
                 
@@ -231,10 +241,7 @@ class ExamService:
         if current_user.role == UserRole.PROFESSOR and exam.author_id != current_user.id:
             raise ForbiddenException("Você não tem permissão para editar esta prova")
 
-        # 1. Extrai a lista de IDs puros a partir dos objetos recebidos
         pure_ids = [q.question_id for q in questions_data]
-        
-        # Cria um dicionário para busca rápida dos dados enviados pelo React (como a flag hide_alternatives)
         q_data_dict = {q.question_id: q for q in questions_data}
 
         if pure_ids:
@@ -244,36 +251,31 @@ class ExamService:
             if missing:
                 raise NotFoundException(f"Questões não encontradas: {missing}")
 
-        # Pega as ligações atuais entre esta prova e as questões
         current_eqs = db.query(ExamQuestion).filter(ExamQuestion.exam_id == exam.id).all()
         current_eq_dict = {eq.question_id: eq for eq in current_eqs}
         current_ids = list(current_eq_dict.keys())
 
-        # Identifica quem sai e quem entra na prova
         ids_to_remove = set(current_ids) - set(pure_ids)
         ids_to_add = set(pure_ids) - set(current_ids)
 
-        # 2. Remove as que saíram da prova
         if ids_to_remove:
             db.query(ExamQuestion).filter(
                 ExamQuestion.exam_id == exam.id,
                 ExamQuestion.question_id.in_(ids_to_remove)
             ).delete(synchronize_session=False)
 
-        # 3. Adiciona as novas já configurando a flag de esconder alternativas
         for q_id in ids_to_add:
             data = q_data_dict[q_id]
             new_eq = ExamQuestion(
                 exam_id=exam.id, 
                 question_id=q_id, 
                 order_index=0,
-                hide_alternatives=data.hide_alternatives # 🔥 Flag salva na criação
+                hide_alternatives=data.hide_alternatives 
             )
             db.add(new_eq)
 
         db.flush()
 
-        # 4. Atualiza a ordem E A FLAG de TODAS as questões (as antigas que ficaram e as novas)
         for index, q_id in enumerate(pure_ids):
             data = q_data_dict[q_id]
             db.query(ExamQuestion).filter(
@@ -281,14 +283,12 @@ class ExamService:
                 ExamQuestion.question_id == q_id
             ).update({
                 "order_index": index + 1,
-                "hide_alternatives": data.hide_alternatives # 🔥 Atualiza a flag se o professor clicou no botão
+                "hide_alternatives": data.hide_alternatives 
             }, synchronize_session=False)
 
         exam.total_questions = len(pure_ids)
-
         status_str = str(exam.status).replace("ExamStatus.", "").upper()
         
-        # 5. Se a prova está Aprovada/Aplicada, as questões que FICARAM recebem "Aplicadas"
         if status_str in ["APROVADA", "APLICADA"] and pure_ids:
             category_applied = db.query(Category).filter(func.lower(Category.name) == "aplicadas").first()
             if not category_applied:
@@ -300,7 +300,6 @@ class ExamService:
                 Question.id.in_(pure_ids)
             ).update({"category_id": category_applied.id}, synchronize_session=False)
 
-        # 6. O CAMINHO DE VOLTA SEGURO: Verifica se as que saíram ainda estão em outras provas
         if ids_to_remove:
             still_in_use = db.query(ExamQuestion.question_id).join(
                 Exam, Exam.id == ExamQuestion.exam_id
@@ -432,8 +431,6 @@ class ExamService:
         if exam.status == ExamStatus.APLICADA:
             raise ConflictException("Prova aplicada não pode ser deletada")
 
-        #  INÍCIO DA LÓGICA DE DEVOLUÇÃO DE QUESTÕES 
-        # Antes de apagar a prova, temos que devolver todas as questões dela para a categoria "Aprovadas" (ID 2)
         questions_in_exam = db.query(ExamQuestion.question_id).filter(
             ExamQuestion.exam_id == exam.id
         ).all()
@@ -456,7 +453,6 @@ class ExamService:
                 db.query(Question).filter(
                     Question.id.in_(ids_to_revert)
                 ).update({"category_id": 2}, synchronize_session=False)
-                print(f"🚀 [DEBUG - DELETE] {len(ids_to_revert)} questões devolvidas. {len(still_in_use_ids)} mantidas como aplicadas.")
 
         upload_root = Path(settings.UPLOAD_PATH)
         for field in ("header_image", "footer_image"):
@@ -476,8 +472,8 @@ class ExamService:
     ) -> Exam:
         exam = ExamService.get_exam_by_id(db, exam_id, current_user)
 
-        if new_status == ExamStatus.APROVADA and current_user.role != UserRole.ADMIN:
-            raise ForbiddenException("Apenas administradores podem aprovar provas")
+        if new_status == ExamStatus.APROVADA and current_user.role not in [UserRole.ADMIN, UserRole.REVISOR]:
+            raise ForbiddenException("Apenas administradores e revisores podem aprovar provas")
 
         if current_user.role == UserRole.PROFESSOR:
             if exam.author_id != current_user.id:
@@ -487,48 +483,36 @@ class ExamService:
 
         exam.status = new_status
 
-        # 👇 INÍCIO DA LÓGICA BLINDADA (COM CRIAÇÃO AUTOMÁTICA DE CATEGORIA) 👇
+        if new_status == ExamStatus.APROVADA:
+            if hasattr(exam, 'reviewed_by_id'):
+                exam.reviewed_by_id = current_user.id
+
         status_str = str(exam.status).replace("ExamStatus.", "").upper()
-        print(f"🚀 [DEBUG 1 - STATUS] O Status da prova {exam.id} mudou para: {status_str}")
 
         if status_str in ["APROVADA", "APLICADA"]:
-            print("🚀 [DEBUG 2 - STATUS] Entrou no IF de Aprovação/Aplicação!")
-            
-            # Busca as questões amarradas a essa prova na tabela associativa
             questions_to_update = db.query(ExamQuestion.question_id).filter(
                 ExamQuestion.exam_id == exam.id
             ).all()
             
             question_ids = [q.question_id for q in questions_to_update]
-            print(f"🚀 [DEBUG 3 - STATUS] IDs das questões a serem alteradas: {question_ids}")
             
             if question_ids:
-                # Tenta procurar a categoria 'Aplicadas' pelo nome
                 category_applied = db.query(Category).filter(
                     func.lower(Category.name) == "aplicadas"
                 ).first()
 
-                # Se a categoria NÃO existir no banco de dados, nós criamos ela na hora!
                 if not category_applied:
-                    print("⚠️ [AVISO - STATUS] Categoria 'Aplicadas' não encontrada! Criando automaticamente...")
                     category_applied = Category(
                         name="Aplicadas", 
                         description="Questões já utilizadas em provas oficiais",
-                        color="#28a745" # Cor verde padrão
+                        color="#28a745" 
                     )
                     db.add(category_applied)
-                    db.flush() # Salva no banco instantaneamente para gerar o ID
-                    print(f"🚀 [DEBUG - STATUS] Categoria 'Aplicadas' criada com o ID: {category_applied.id}")
+                    db.flush() 
 
-                # Agora temos 100% de certeza que a categoria existe e tem um ID válido!
                 db.query(Question).filter(
                     Question.id.in_(question_ids)
                 ).update({"category_id": category_applied.id}, synchronize_session=False)
-                
-                print(f"🚀 [DEBUG 4 - STATUS] SUCESSO! Questões movidas para a categoria ID: {category_applied.id}")
-            else:
-                print("⚠️ [AVISO - STATUS] Nenhuma questão encontrada vinculada a esta prova.")
-        # 👆 FIM DA LÓGICA BLINDADA 👇
 
         db.commit()
         db.refresh(exam)
@@ -550,14 +534,33 @@ class ExamService:
     @staticmethod
     def get_exam_stats(db: Session, current_user: User) -> dict:
         query = db.query(Exam)
-        if current_user.role == UserRole.PROFESSOR:
-            query = query.filter(Exam.author_id == current_user.id)
+        
+        # ── BLINDAGEM NO DASHBOARD DE ESTATÍSTICAS ─────────────────────────────
+        # REMOVIDA: A trava do PROFESSOR. As estatísticas globais são exibidas.
+            
+        if current_user.role == UserRole.REVISOR:
+            # TRAVA REVISOR
+            query = query.filter(
+                or_(
+                    Exam.status == ExamStatus.PENDENTE,
+                    and_(Exam.status == ExamStatus.APROVADA, getattr(Exam, 'reviewed_by_id', Exam.author_id) == current_user.id)
+                )
+            )
 
         total_exams = query.count()
 
         stats_query = db.query(Exam.status, func.count(Exam.id))
-        if current_user.role == UserRole.PROFESSOR:
-            stats_query = stats_query.filter(Exam.author_id == current_user.id)
+        
+        # REMOVIDA: A trava do PROFESSOR nos detalhes por status.
+            
+        if current_user.role == UserRole.REVISOR:
+            # TRAVA REVISOR NOS DETALHES POR STATUS
+            stats_query = stats_query.filter(
+                or_(
+                    Exam.status == ExamStatus.PENDENTE,
+                    and_(Exam.status == ExamStatus.APROVADA, getattr(Exam, 'reviewed_by_id', Exam.author_id) == current_user.id)
+                )
+            )
 
         stats_results = stats_query.group_by(Exam.status).all()
         status_stats  = {status.value: count for status, count in stats_results}

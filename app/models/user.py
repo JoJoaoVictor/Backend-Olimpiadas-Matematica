@@ -76,7 +76,18 @@ class User(BaseModel):
     )
 
     # ── exams ─────────────────────────────────────────────────────────────────
-    exams = relationship("Exam", back_populates="author")
+    exams = relationship(
+        "Exam", 
+        foreign_keys="Exam.author_id",
+        back_populates="author"
+    )
+
+    # ── reviewed_exams ────────────────────────────────────────────────────────
+    reviewed_exams = relationship(
+        "Exam",
+        foreign_keys="Exam.reviewed_by_id",
+        back_populates="reviewed_by"
+    )
 
     # ── notifications ─────────────────────────────────────────────────────────
     notifications = relationship(
