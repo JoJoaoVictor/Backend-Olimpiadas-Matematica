@@ -6,38 +6,31 @@ Inclui:
 - Refresh token
 - Perfil
 - Reset de senha
-- Login com Google (JWT credential)
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-# Google Auth
-from google.oauth2 import id_token
-from google.auth.transport import requests
-
 # Core & Database
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
-from app.models.user_profile import UserProfile       
+from app.models.user_profile import UserProfile
 from app.services.auth_service import AuthService
 from app.core.exceptions import AppException
 from app.core.config import settings
 from sqlalchemy.exc import IntegrityError
 import logging
-from fastapi import HTTPException, status, Depends
 
 # Schemas
 from app.schemas.auth import (
     UserRegister,
     UserLogin,
     TokenRefresh,
-    ForgotPasswordRequest, # <--- Nome Atualizado
-    ResetPasswordRequest,  # <--- Nome Atualizado
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
 )
-# Mantivemos o UserResponse vindo de .user pois você o usa para formatar o objeto User
-from app.schemas.user import UserResponse 
+from app.schemas.user import UserResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -52,16 +45,13 @@ async def register_user(
 ):
     """Registra novo usuário, cria perfil acadêmico e faz login automático."""
     try:
-        # 1. O Service faz toda a validação, hash de senha e salva Usuário + Perfil com um único commit
         user = AuthService.register_user(db, user_data)
 
-        # 2. Faz o login automático gerando os tokens (Access e Refresh)
         _, tokens = AuthService.authenticate_user(
             db,
             UserLogin(email=user_data.email, password=user_data.password),
         )
 
-        # 3. Retorna os dados no formato exato que o React espera
         return {
             "success": True,
             "message": "Usuário registrado com sucesso",
@@ -72,14 +62,12 @@ async def register_user(
         }
 
     except AppException as e:
-        # Cai aqui se o email ou CPF já existirem (Erro amigável para o Front, sem CORS)
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     except Exception as e:
-        # Cai aqui apenas se o banco de dados cair ou der erro grave no servidor
         db.rollback()
         logger.error(f"Erro inesperado no registro: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Erro interno ao registrar usuário."
         )
 
@@ -108,40 +96,6 @@ async def login_user(
     except AppException as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
-
-# =========================
-# LOGIN COM GOOGLE (JWT)
-# =========================
-@router.options("/google")
-async def options_google():
-    """Responde ao preflight CORS para a rota Google OAuth."""
-    return {"message": "OK"}
-@router.options("/google")
-async def options_google():
-    """Responde ao preflight CORS para o endpoint Google OAuth."""
-    return {"message": "OK"}
-
-@router.post("/google")
-async def login_with_google(payload: dict, db: Session = Depends(get_db)):
-    credential = payload.get("credential")
-    if not credential:
-        raise HTTPException(status_code=400, detail="Token do Google não enviado")
-
-    try:
-        user, tokens = AuthService.authenticate_google_user(db, credential)
-
-        return {
-            "success": True,
-            "data": {
-                "user": UserResponse.from_orm(user),
-                "tokens": tokens,
-            },
-        }
-    except AppException as e:
-        raise HTTPException(status_code=e.status_code, detail=e.detail)
-    except Exception as e:
-        print(f"Erro Google: {e}")
-        raise HTTPException(status_code=400, detail="Falha na autenticação Google")
 
 # =========================
 # REFRESH TOKEN
@@ -176,7 +130,7 @@ async def refresh_access_token(
 async def get_user_profile(
     current_user: User = Depends(get_current_user),
 ):
-    """Retorna perfil do usuário autenticado (Atende /me e /profile)."""
+    """Retorna perfil do usuário autenticado."""
     return {
         "success": True,
         "data": {"user": UserResponse.from_orm(current_user)},
@@ -216,10 +170,9 @@ async def update_user_profile(
 # =========================
 # RESET DE SENHA
 # =========================
-
 @router.post("/forgot-password")
 async def forgot_password(
-    data: ForgotPasswordRequest, # Schema atualizado
+    data: ForgotPasswordRequest,
     db: Session = Depends(get_db),
 ):
     """Solicita link de reset de senha."""
@@ -231,14 +184,13 @@ async def forgot_password(
     }
 
 
-@router.post("/reset-password") # Removido {token} da URL, pois vem no body agora
+@router.post("/reset-password")
 async def reset_password(
-    data: ResetPasswordRequest, # Este schema contém 'token' e 'new_password'
+    data: ResetPasswordRequest,
     db: Session = Depends(get_db),
 ):
     """Reseta a senha do usuário usando o token."""
     try:
-        # Chama o método correto com os dados do corpo
         AuthService.reset_password(
             db,
             data.token,
@@ -259,10 +211,7 @@ async def reset_password(
 # =========================
 @router.post("/logout")
 async def logout_user():
-    """
-    Logout é controlado no frontend (remoção do token).
-    Endpoint apenas para compatibilidade ou invalidação futura.
-    """
+    """Logout controlado no frontend. Endpoint para compatibilidade futura."""
     return {
         "success": True,
         "message": "Logout realizado com sucesso",
