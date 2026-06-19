@@ -482,7 +482,7 @@ class AdvancedPDFGenerator:
                         inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
                         displayMath: [['$$', '$$']]
                     }},
-                    svg: {{ fontCache: 'global' }},
+                    svg: {{ fontCache: 'local' }},
                     startup: {{ typeset: false }}
                 }};
             </script>
@@ -517,36 +517,56 @@ class AdvancedPDFGenerator:
                 .resolucao-box {{ margin-top: 1mm; margin-bottom: 5mm; }}
                 .resolucao-label {{ font-family: 'Arial', Times, serif; font-size: 14pt; margin-bottom: 1mm; color: #cc0000; font-weight: bold; }}
                 .resolucao-text {{ color: #cc0000; font-size: 14pt; line-height: 1.3; }}
-                .titulo-resolucoes {{ display: none; }}
-                .page-break {{ page-break-after: always; display: block; height: 1px; }}
-                .keep-together {{ page-break-inside: avoid !important; break-inside: avoid !important; }}
-                .force-break {{ page-break-before: always !important; break-before: page !important; }}
+                .content-gabarito .question-box {{
+                    break-inside: auto !important;
+                    page-break-inside: auto !important;
+                    display: block !important;
+                }}
             </style>
         </head>
         <body>
+            <!-- ========== TABELA 1: PROVA ========== -->
             <table class="print-table">
                 <thead><tr><td><div class="header-space">{f'<img src="{header_img}" class="header-img" />' if header_img else ''}</div></td></tr></thead>
                 <tfoot><tr><td><div class="footer-space">{f'<img src="{footer_img}" class="footer-img" />' if footer_img else ''}</div></td></tr></tfoot>
-                <tbody><tr><td><div class="content-wrapper">
-                    <div class="titulo-prova">{titulo}</div>
-                    <div class="campos-aluno">
-                        <p><strong>ALUNO(A):</strong>___________________________________________________________________________</p>
-                        <p><strong>ESCOLA:</strong> _________________________________________ <strong>MUNICÍPIO:</strong> ________________________</p>
-                    </div>
-                    <div class="content">{questions_sem_resolucao}</div>
-                    <div class="page-break"></div>
-                    <div class="titulo-prova">{titulo}</div>
-                    <div class="campos-aluno">
-                        <p><strong>ALUNO(A):</strong>____________________________________________________________________________</p>
-                        <p><strong>ESCOLA:</strong> _________________________________________ <strong>MUNICÍPIO:</strong> ________________________</p>
-                    </div>
-                    <div class="content">{questions_com_resolucao}</div>
-                </div></td></tr></tbody>
+                <tbody>
+                    <tr>
+                        <td>
+                            <div class="content-wrapper">
+                                <div class="titulo-prova">{titulo}</div>
+                                <div class="campos-aluno">
+                                    <p><strong>ALUNO(A):</strong>___________________________________________________________________________</p>
+                                    <p><strong>ESCOLA:</strong> _________________________________________ <strong>MUNICÍPIO:</strong> ________________________</p>
+                                </div>
+                                <div class="content">{questions_sem_resolucao}</div>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <!-- ========== TABELA 2: GABARITO ========== -->
+            <table class="print-table" style="page-break-before: always !important; break-before: page !important;">
+                <thead><tr><td><div class="header-space">{f'<img src="{header_img}" class="header-img" />' if header_img else ''}</div></td></tr></thead>
+                <tfoot><tr><td><div class="footer-space">{f'<img src="{footer_img}" class="footer-img" />' if footer_img else ''}</div></td></tr></tfoot>
+                <tbody>
+                    <tr>
+                        <td>
+                            <div class="content-wrapper">
+                                <div class="titulo-prova">{titulo}</div>
+                                <div class="campos-aluno">
+                                    <p><strong>ALUNO(A):</strong>____________________________________________________________________________</p>
+                                    <p><strong>ESCOLA:</strong> _________________________________________ <strong>MUNICÍPIO:</strong> ________________________</p>
+                                </div>
+                                <div class="content content-gabarito">{questions_com_resolucao}</div>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
             </table>
         </body>
         </html>
         """
-
         buffer = io.BytesIO()
         browser = await PlaywrightManager.get_browser()
         page = None
@@ -561,15 +581,25 @@ class AdvancedPDFGenerator:
                 )
             except Exception:
                 logger.warning("MathJax não respondeu, continuando...")
-
+            await page.evaluate("""
+                const gabaritoTable = document.getElementById('gabarito-table');
+                if (gabaritoTable) {
+                    const rect = gabaritoTable.getBoundingClientRect();
+                    // Se o topo da tabela estiver quase no início da página (tolerância de 5px),
+                    // significa que já houve quebra natural e a forçada criaria página extra.
+                    if (rect.top <= 5) {
+                        gabaritoTable.style.pageBreakBefore = 'auto';
+                        gabaritoTable.style.breakBefore = 'auto';
+                    }
+                }
+            """)
             pdf_bytes = await page.pdf(
                 format="A4",
                 print_background=True,
                 prefer_css_page_size=True,
-                margin={"top": "0", "bottom": "0", "left": "0", "right": "0"}
+                margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
             )
 
-            pdf_bytes = AdvancedPDFGenerator._remove_blank_pages(pdf_bytes)
             buffer.write(pdf_bytes)
             buffer.seek(0)
             logger.info(f"✅ PDF gerado com sucesso! Tamanho: {len(pdf_bytes)} bytes")

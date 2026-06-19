@@ -4,21 +4,16 @@ Serviços de autenticação e gerenciamento de usuários.
 Responsável por:
 - Registro de usuários
 - Login com email/senha
-- Login com Google (Google Identity Services)
 - Geração e renovação de tokens JWT
-- Recuperação de Senha (Esqueci minha senha) com envio de Email real
+- Recuperação de Senha com envio de Email
 """
 
 from datetime import datetime, timedelta
-from typing import Tuple, Optional
+from typing import Tuple
 from sqlalchemy.orm import Session
 import secrets
+
 from app.models.user_profile import UserProfile
-
-# Google Identity Services (JWT)
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
-
 from app.models.user import User, UserRole
 from app.schemas.auth import UserRegister, UserLogin
 from app.core.security import (
@@ -34,15 +29,10 @@ from app.core.exceptions import (
     NotFoundException
 )
 from app.core.config import settings
-
-# IMPORTAÇÃO DE ENVIO DE EMAIL (Utilitário criado anteriormente)
 from app.core.mail import send_reset_password_email
 
+
 class AuthService:
-    """
-    Classe responsável por todas as regras de negócio
-    relacionadas à autenticação e autorização.
-    """
 
     # =========================
     # REGISTRO DE USUÁRIO
@@ -51,24 +41,20 @@ class AuthService:
     @staticmethod
     def register_user(db: Session, user_data: UserRegister) -> User:
         """
-        Registra um novo usuário com email e senha E cria o perfil vinculado.
+        Registra um novo usuário com email e senha e cria o perfil vinculado.
         Tudo em uma única transação no banco.
         """
-        # 1. Verifica se email já está em uso
         existing_user = db.query(User).filter(User.email == user_data.email).first()
         if existing_user:
             raise ConflictException("Email já está em uso")
 
-        # 2. Verifica se o CPF já existe (Validação Proativa)
         if hasattr(user_data, 'cpf') and user_data.cpf:
             existing_cpf = db.query(UserProfile).filter(UserProfile.cpf == user_data.cpf).first()
             if existing_cpf:
                 raise ConflictException("Este CPF já está cadastrado no sistema")
 
-        # Token para verificação de email
         email_token = secrets.token_urlsafe(32)
 
-        # 3. Prepara a Entidade Usuário (AQUI usamos o seu get_password_hash corretamente)
         user = User(
             name=user_data.name,
             email=user_data.email,
@@ -80,9 +66,8 @@ class AuthService:
         )
 
         db.add(user)
-        db.flush() # O flush cria o ID do usuário, mas NÃO commita ainda!
+        db.flush()
 
-        # 4. Prepara a Entidade Perfil vinculada ao ID do novo usuário
         profile = UserProfile(
             user_id   = user.id,
             cpf       = user_data.cpf       or None,
@@ -94,13 +79,12 @@ class AuthService:
         )
         db.add(profile)
 
-        # 5. Salva TUDO de uma vez só no banco (Commit Único)
         try:
             db.commit()
             db.refresh(user)
             return user
-        except Exception as e:
-            db.rollback() # Se falhar, desfaz tudo e não deixa lixo no banco
+        except Exception:
+            db.rollback()
             raise ConflictException("Erro de integridade ao salvar usuário e perfil.")
 
     # =========================
@@ -109,9 +93,7 @@ class AuthService:
 
     @staticmethod
     def authenticate_user(db: Session, credentials: UserLogin) -> Tuple[User, dict]:
-        """
-        Autentica usuário via email e senha.
-        """
+        """Autentica usuário via email e senha."""
         user = db.query(User).filter(User.email == credentials.email).first()
 
         if not user or not verify_password(credentials.password, user.password_hash):
@@ -121,73 +103,12 @@ class AuthService:
         return user, tokens
 
     # =========================
-    # LOGIN COM GOOGLE (JWT)
-    # =========================
-
-    @staticmethod
-    def authenticate_google_user(db: Session, credential: str) -> Tuple[User, dict]:
-        """
-        Autentica usuário via Google Identity Services.
-        Se o usuário não existir, cria automaticamente com cargo STUDENT.
-        """
-
-        try:
-            # 1. Valida o token JWT com o Google
-            google_payload = id_token.verify_oauth2_token(
-                credential,
-                google_requests.Request(),
-                settings.GOOGLE_CLIENT_ID
-            )
-        except ValueError:
-            raise UnauthorizedException("Token do Google inválido")
-
-        # 2. Extrai dados do usuário
-        email = google_payload.get("email")
-        name = google_payload.get("name")
-        picture = google_payload.get("picture")
-        # 'sub' é o ID único do usuário no Google
-        google_sub = google_payload.get("sub") 
-
-        if not email:
-            raise UnauthorizedException("Email não encontrado no token do Google")
-
-        # 3. Verifica se usuário já existe
-        user = db.query(User).filter(User.email == email).first()
-
-        # 4. Cria usuário automaticamente se não existir
-        if not user:
-            user = User(
-                name=name,
-                email=email,
-                google_id=google_sub, 
-                password_hash="", # Usuário Google não tem senha
-                
-                # --- REQUISITO: Google = STUDENT ---
-                role=UserRole.STUDENT,
-                # -----------------------------------
-                
-                is_active=True,
-                is_email_verified=True, # Google já verifica o email
-                avatar_url=picture,
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
- 
-        # 5. Gera tokens JWT da aplicação
-        tokens = AuthService._generate_tokens(user)
-
-        return user, tokens
-
-    # =========================
     # REFRESH TOKEN
     # =========================
 
     @staticmethod
     def refresh_access_token(db: Session, refresh_token: str) -> dict:
-        """
-        Gera novos tokens a partir de um refresh token válido.
-        """
+        """Gera novos tokens a partir de um refresh token válido."""
         payload = decode_token(refresh_token)
         user_id = payload.get("sub")
 
@@ -203,58 +124,41 @@ class AuthService:
 
     @staticmethod
     async def forgot_password(db: Session, email: str) -> None:
-        """
-        Gera token de recuperação e ENVIA O EMAIL DE VERDADE.
-        OBS: Este método deve ser chamado com 'await'.
-        """
+        """Gera token de recuperação e envia o email."""
         user = db.query(User).filter(User.email == email).first()
-        
-        # Se usuário não existe, retornamos silenciosamente para segurança (Security through obscurity)
+
         if not user:
             return
 
-        # 1. Gerar Token Único Seguro
         token = secrets.token_urlsafe(32)
-        
-        # 2. Salvar no Banco (Validade: 30 minutos)
+
         user.password_reset_token = token
         user.password_reset_expires = datetime.utcnow() + timedelta(minutes=30)
         db.commit()
 
-        # 3. Gerar Link (Apontando para o Frontend)
-        # Nota: Idealmente use settings.FRONTEND_URL, aqui estamos usando localhost fixo
-        link_recuperacao = f"http://localhost:5173/reset-password?token={token}"
-        
-        # 4. Enviar Email (Async)
+        link_recuperacao = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+
         try:
-            print(f"Enviando email de recuperação para {email}...")
             await send_reset_password_email(email, link_recuperacao)
-            print("Email enviado com sucesso!")
         except Exception as e:
-            # Logamos o erro mas não quebramos a requisição para o usuário não ver stack trace
-            print(f"ERRO CRÍTICO AO ENVIAR EMAIL: {e}")
-            # Em produção, usar logger.error(e)
+            import logging
+            logging.getLogger(__name__).error(f"Erro ao enviar email de recuperação: {e}")
 
     @staticmethod
     def reset_password(db: Session, token: str, new_password: str) -> None:
-        """
-        Valida o token e atualiza a senha do usuário.
-        """
-        # Busca usuário pelo token
+        """Valida o token e atualiza a senha do usuário."""
         user = db.query(User).filter(User.password_reset_token == token).first()
 
         if not user:
             raise UnauthorizedException("Token inválido.")
 
-        # Verifica expiração
         if user.password_reset_expires < datetime.utcnow():
             raise UnauthorizedException("Token expirado. Solicite novamente.")
 
-        # Atualiza a senha e limpa o token
         user.password_hash = get_password_hash(new_password)
         user.password_reset_token = None
         user.password_reset_expires = None
-        
+
         db.commit()
 
     # =========================
@@ -263,14 +167,12 @@ class AuthService:
 
     @staticmethod
     def _generate_tokens(user: User) -> dict:
-        """
-        Gera access token e refresh token JWT.
-        """
+        """Gera access token e refresh token JWT."""
         return {
             "access_token": create_access_token(user.id),
             "refresh_token": create_refresh_token(user.id),
             "token_type": "bearer",
-            "expires_in": 50 * 60,  # 50 minutos
+            "expires_in": 50 * 60,
             "user": {
                 "id": user.id,
                 "name": user.name,

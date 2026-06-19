@@ -50,7 +50,7 @@ class ExamService:
                 anos=exam_data.anos,
                 ano=getattr(exam_data, 'ano', None),
                 total_questions=len(exam_data.question_ids),
-                status=exam_data.status or ExamStatus.PENDENTE # 🌟 Corrigido de RASCUNHO para PENDENTE
+                status=exam_data.status or ExamStatus.PENDENTE 
             )
             db.add(exam)
             db.flush()
@@ -98,7 +98,7 @@ class ExamService:
         # REMOVIDA: A trava do PROFESSOR. Agora eles podem ver a lista global.
         
         if current_user.role == UserRole.REVISOR:
-            # 🌟 TRAVA REVISOR: Vê provas Pendentes OU Aprovadas por ele mesmo
+            # TRAVA REVISOR: Vê provas Pendentes OU Aprovadas por ele mesmo
             query = query.filter(
                 or_(
                     Exam.status == ExamStatus.PENDENTE,
