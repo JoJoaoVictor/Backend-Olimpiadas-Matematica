@@ -1,12 +1,11 @@
 from typing import Optional, List
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, model_validator
 from app.models.question import DifficultyLevel
 from app.schemas.base import TimestampedSchema
 from app.schemas.category import CategoryResponse
 from app.schemas.grau import GrauResponse
 from app.schemas.user import UserResponse
 from app.schemas.image import ImageResponse
-
 
 class QuestionBase(BaseModel):
     """Schema base para questão."""
@@ -83,10 +82,28 @@ class QuestionResponse(QuestionBase, TimestampedSchema):
     is_applied: bool
     author_campus: Optional[str] = None
     author_cidade: Optional[str] = None
+    author_email: Optional[str] = None # Nossa coluna snapshot
     
     model_config = {
         "from_attributes": True
     }
+
+    @model_validator(mode='after')
+    def fallback_author_data(self):
+        """
+        Se o autor físico foi deletado (self.author é None), nós reconstruímos o 
+        objeto author mockado usando os snapshots para o frontend não quebrar!
+        """
+        if not self.author:
+            # Reconstroi uma resposta de usuário fictícia apenas para o Front ler com segurança
+            self.author = {
+                "id": None,
+                "name": self.professor_name or "Usuário Deletado",
+                "email": self.author_email or "Não informado",
+                "role": "PROFESSOR",
+                "is_active": False
+            }
+        return self
 
 
 class QuestionListResponse(BaseModel):
@@ -109,6 +126,7 @@ class QuestionFilters(BaseModel):
     bncc_theme: Optional[str] = Field(None, max_length=200)
     ability_code: Optional[str] = Field(None, max_length=20)
     author_id: Optional[int] = Field(None, gt=0)
-    reviewer_id: Optional[int] = Field(None, gt=0)
-    page: int = Field(default=1, gt=0)
-    per_page: int = Field(default=20, gt=0, le=100)
+    reviewer_id: Optional[int] = Field(None, gt=0) 
+    only_approved_applied: Optional[bool] = Field(None) 
+    page: int = Field(default=1, gt=0) 
+    per_page: int = Field(default=20, gt=0, le=1000)

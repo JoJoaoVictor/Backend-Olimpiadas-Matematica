@@ -57,7 +57,7 @@ class Exam(BaseModel):
     # Preenchido automaticamente pelo exam_service — frontend não precisa enviar.
     # Garante exibição do nome mesmo após o usuário ser deletado.
     author_name = Column(String(100), nullable=False, default="")
-
+    author_email = Column(String(150), nullable=True, default="")
     # Especificamos foreign_keys aqui para o SQLAlchemy não se confundir
     # com as duas relações que apontam para a tabela "users"
     author = relationship("User", foreign_keys=[author_id], back_populates="exams")

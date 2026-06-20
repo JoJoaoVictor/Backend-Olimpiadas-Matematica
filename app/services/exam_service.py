@@ -44,6 +44,8 @@ class ExamService:
 
             exam = Exam(
                 name=exam_data.name,
+                author_name=getattr(current_user, "name", "") or "Usuário Sem Nome",
+                author_email=current_user.email,
                 description=exam_data.description,
                 author_id=current_user.id,
                 fase=exam_data.fase,

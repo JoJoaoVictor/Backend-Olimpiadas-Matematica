@@ -25,7 +25,8 @@ router = APIRouter()
 @router.get("", response_model=dict)
 async def list_questions(
     page: int = Query(1, ge=1, description="Página"),
-    per_page: int = Query(20, ge=1, le=100, description="Itens por página"),
+    # 🌟 CORREÇÃO 1: Alterado le=100 para le=1000
+    per_page: int = Query(20, ge=1, le=1000, description="Itens por página"),
     search: str = Query(None, description="Busca textual"),
     category_id: int = Query(None, description="Filtro por categoria"),
     grau_id: int = Query(None, description="Filtro por grau"),
@@ -35,11 +36,10 @@ async def list_questions(
     bncc_theme: str = Query(None, description="Tema BNCC"),
     ability_code: str = Query(None, description="Código da habilidade"),
     author_id: int = Query(None, description="Filtro por autor"),
-    # ── ALTERAÇÃO 1 ──────────────────────────────────────────────────────────
-    # Agora: get_any_staff_user (bloqueia STUDENT na listagem)
-    # CORRIGIDO: Alterado de get_current_user para get_any_staff_user conforme seu comentário
+    # 🌟 CORREÇÃO 2: Adicionado o novo parâmetro enviado pelo Frontend
+    only_approved_applied: bool = Query(None, description="Filtrar apenas aprovadas e aplicadas"),
     
-    current_user: User = Depends(get_current_user),  # Permite que qualquer usuário autenticado acesse a listagem, mas o service vai filtrar o que cada um pode ver
+    current_user: User = Depends(get_current_user),  
     db: Session = Depends(get_db)
 ):
     """Lista questões com filtros."""
@@ -55,7 +55,9 @@ async def list_questions(
             phase_level=phase_level,
             bncc_theme=bncc_theme,
             ability_code=ability_code,
-            author_id=author_id
+            author_id=author_id,
+            # 🌟 CORREÇÃO 3: Injetado no schema que vai para o Service
+            only_approved_applied=only_approved_applied
         )
 
         result = QuestionService.get_questions(db, filters, current_user)
@@ -72,7 +74,6 @@ async def list_questions(
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_question(
     question_data: QuestionCreate,
-    # STUDENT também pode criar questões (submeter para revisão)
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -93,13 +94,6 @@ async def create_question(
 @router.get("/{question_id}", response_model=dict)
 async def get_question(
     question_id: int,
-    # ── ALTERAÇÃO 2 ──────────────────────────────────────────────────────────
-    # Agora: get_professor_or_revisor_user → ADMIN, REVISOR e PROFESSOR podem
-    #        buscar uma questão por ID. A lógica de ownership (professor só vê
-    #        a própria) fica em QuestionService.get_question_by_id, que já
-    #        recebe current_user e pode aplicar o filtro lá.
-    # Impacto direto: resolve o 403 e o sumiço dos campos na tela de edição.
-    # STUDENT pode acessar suas próprias questões para ver comentários do revisor e corrigir
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -120,12 +114,6 @@ async def get_question(
 async def update_question(
     question_id: int,
     question_data: QuestionUpdate,
-    # ── ALTERAÇÃO 3 ──────────────────────────────────────────────────────────
-    # Agora: get_professor_or_revisor_user (STUDENT e acesso sem role são
-    #        bloqueados já na camada de rota, antes de chegar no service).
-    # Impacto: STUDENT não consegue fazer PATCH via API diretamente.
-    # A lógica de "professor só edita a própria" continua no QuestionService.
-    # STUDENT pode editar suas próprias questões pendentes (para corrigir após comentário do revisor)
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -146,11 +134,6 @@ async def update_question(
 @router.delete("/{question_id}", response_model=dict)
 async def delete_question(
     question_id: int,
-    # ── ALTERAÇÃO 4 ──────────────────────────────────────────────────────────
-    # Antes: get_current_user (qualquer autenticado)
-    # Agora: get_professor_or_revisor_user
-    # Impacto: STUDENT não consegue deletar questões via API.
-    # STUDENT pode deletar suas próprias questões pendentes
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -189,14 +172,11 @@ async def approve_question(
 
 @router.get("/stats/summary", response_model=dict)
 async def get_question_stats(
-    # ALTERAÇÃO: Mudado de get_admin_user para get_any_staff_user para permitir que 
-    # Professores e Revisores também vejam o painel de estatísticas com seus dados filtrados.
     current_user: User = Depends(get_any_staff_user),
     db: Session = Depends(get_db)
 ):
     """Estatísticas de questões filtradas por permissão."""
     try:
-        # ALTERAÇÃO: Agora repassa o current_user para a camada de serviço
         stats = QuestionService.get_question_stats(db, current_user)
 
         return {

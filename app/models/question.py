@@ -24,6 +24,7 @@ class Question(BaseModel):
     
     author_campus  = Column(String(100), nullable=True)
     author_cidade  = Column(String(100), nullable=True)
+    author_email   = Column(String(150), nullable=True, default="")
 
     serie_ano        = Column(String(50),  nullable=False, index=True)
     phase_level      = Column(String(50),  nullable=False, index=True)

@@ -48,7 +48,8 @@ class QuestionService:
             professor_name=current_user.name,   
             author_campus=campus_atual,       
             author_cidade=cidade_atual,         
-            image_id=question_data.image_id
+            image_id=question_data.image_id,
+            author_email=current_user.email
         )
 
         db.add(question)
@@ -66,7 +67,7 @@ class QuestionService:
         """
         Lista questões com filtros, paginação e visibilidade por role.
         """
-        from sqlalchemy import or_, and_, desc # 🌟 Certifique-se de que and_ está importado
+        from sqlalchemy import or_, and_, desc 
 
         query = db.query(Question).options(
             joinedload(Question.category),
@@ -121,8 +122,18 @@ class QuestionService:
                 )
             )
 
-        if filters.category_id:
-            query = query.filter(Question.category_id == filters.category_id)
+        # ── FILTRO DE CATEGORIA COM TRAVA PARA ELABORAÇÃO DE PROVAS ───────────
+        if getattr(filters, "only_approved_applied", False):
+            if filters.category_id:
+                # Se o usuário escolheu uma aba específica (ex: Apenas Aprovadas)
+                query = query.filter(Question.category_id == filters.category_id)
+            else:
+                # Se está em "Todas", traz apenas Aprovadas (2) e Aplicadas (3), omitindo as Pendentes (1)
+                query = query.filter(Question.category_id.in_([2, 3]))
+        else:
+            # Comportamento padrão original para outras telas do sistema
+            if filters.category_id:
+                query = query.filter(Question.category_id == filters.category_id)
 
         if filters.grau_id:
             query = query.filter(Question.grau_id == filters.grau_id)

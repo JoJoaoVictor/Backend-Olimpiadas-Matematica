@@ -1,5 +1,5 @@
 from typing import Optional, List
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, model_validator
 from app.models.exam import ExamStatus
 from app.schemas.base import TimestampedSchema
 from app.schemas.user import UserResponse
@@ -70,7 +70,7 @@ class ExamQuestionResponse(BaseModel):
 class ExamResponse(ExamBase, TimestampedSchema):
     author: Optional[UserResponse] = None
     author_name: str = ""
-    
+    author_email: Optional[str] = ""
     reviewed_by_id: Optional[int] = None
     reviewed_by: Optional[UserResponse] = None
     
@@ -84,6 +84,22 @@ class ExamResponse(ExamBase, TimestampedSchema):
     reviewer_comments: Optional[str] = None 
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def fallback_exam_author_data(self) -> "ExamResponse":
+        """
+        Garante blindagem total: se o autor original foi removido do banco,
+        reconstroi o campo 'author' utilizando o snapshot persistido na tabela.
+        """
+        if not self.author:
+            self.author = {
+                "id": None,
+                "name": self.author_name or "Autor Desconhecido",
+                "email": self.author_email or "Não informado",
+                "role": "PROFESSOR",
+                "is_active": False
+            }
+        return self
 
     @classmethod
     def from_orm(cls, obj):

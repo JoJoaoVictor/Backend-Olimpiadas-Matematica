@@ -62,8 +62,8 @@ class UserService:
     @staticmethod
     def update_user_profile(db: Session, user_id: int, user_data: dict) -> User:
         """
-        Atualiza os dados cadastrais do próprio usuário logado e preenche
-        automaticamente a Cidade correspondente ao Campus/Polo selecionado.
+        Atualiza os dados cadastrais do próprio usuário logado.
+        Agora aceita a Cidade como um campo de texto livre e independente do Campus.
         """
         user = db.query(User).options(joinedload(User.profile)).filter(User.id == user_id).first()
         if not user:
@@ -84,9 +84,9 @@ class UserService:
             if not user.profile:
                 user.profile = UserProfile(user_id=user.id)
                 db.add(user.profile)
-
-            # Atualiza os campos opcionais e padroniza strings vazias do Front como None
-            fields_to_update = ["telefone", "matricula", "curso", "cpf"]
+ 
+            fields_to_update = ["telefone", "matricula", "curso", "cpf", "cidade", "campus"]
+            
             for field in fields_to_update:
                 if field in profile_data:
                     val = profile_data[field]
@@ -94,25 +94,8 @@ class UserService:
                         val = None
                     setattr(user.profile, field, val)
 
-            # Inteligência de Geolocalização do Campus
-            if "campus" in profile_data:
-                raw_campus = profile_data["campus"]
-                if raw_campus and str(raw_campus).strip():
-                    # Normaliza e limpa ruídos visuais de strings antigas do front
-                    cleaned_campus = (
-                        str(raw_campus)
-                        .replace("UNEMAT - ", "")
-                        .replace("Polo - ", "")
-                        .strip()
-                        .upper()
-                        .replace(" ", "_")
-                    )
-                    user.profile.campus = cleaned_campus
-                    # Vincula a cidade exata baseando-se no dicionário de constantes
-                    user.profile.cidade = UserService.CAMPUS_CIDADE_MAP.get(cleaned_campus, None)
-                else:
-                    user.profile.campus = None
-                    user.profile.cidade = None
+            # ❌ Toda a "Inteligência de Geolocalização do Campus" que sobreescrevia 
+            # a cidade forçadamente foi removida daqui, pois o frontend agora envia a string correta.
 
         db.commit()
         db.refresh(user)
