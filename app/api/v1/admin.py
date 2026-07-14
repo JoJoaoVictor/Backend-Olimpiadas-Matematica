@@ -11,6 +11,12 @@ from app.models.question import Question
 from app.models.exam import Exam
 from app.models.category import Category
 from app.models.grau import Grau
+from datetime import datetime
+from app.models.user import UserStatus, User
+from app.schemas.user import UserResponse
+
+from fastapi import BackgroundTasks
+from app.services.email_service import EmailService
 
 router = APIRouter()
 
@@ -160,3 +166,72 @@ async def toggle_maintenance_mode(
         "data": {"maintenance_mode": enabled}
     }
 
+
+@router.get("/users/pending", response_model=dict)
+async def list_pending_users(
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Lista todos os usuários que estão aguardando aprovação (Admin)."""
+    try:
+        pending_users = db.query(User).filter(User.status == UserStatus.PENDING).all()
+        
+        # Você pode importar UserResponse do seu schemas para formatar a saída
+        from app.schemas.user import UserResponse
+        
+        return {
+            "success": True,
+            "data": {
+                "users": [UserResponse.from_orm(u) for u in pending_users],
+                "total": len(pending_users)
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro ao buscar usuários pendentes")
+
+
+@router.post("/users/{user_id}/approve", response_model=dict)
+async def approve_user(
+    user_id: int,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Aprova um usuário que está aguardando liberação."""
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    
+    if user.status == "APPROVED":
+        raise HTTPException(status_code=400, detail="Usuário já está aprovado.")
+
+    user.status = "APPROVED"
+    user.is_active = True
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Usuário aprovado e acesso liberado com sucesso."
+    }
+
+
+@router.post("/users/{user_id}/reject", response_model=dict)
+async def reject_user(
+    user_id: int,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db)
+):
+    """Rejeita o acesso de um usuário."""
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+
+    user.status = "REJECTED"
+    user.is_active = False
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Acesso do usuário foi rejeitado."
+    }

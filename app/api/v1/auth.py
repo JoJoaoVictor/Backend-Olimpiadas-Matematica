@@ -8,13 +8,14 @@ Inclui:
 - Reset de senha
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
+from app.services.email_service import EmailService
 
 # Core & Database
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models.user import User
+from app.models.user import User, UserStatus
 from app.models.user_profile import UserProfile
 from app.services.auth_service import AuthService
 from app.core.exceptions import AppException
@@ -41,23 +42,27 @@ logger = logging.getLogger(__name__)
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register_user(
     user_data: UserRegister,
+    background_tasks: BackgroundTasks,  
     db: Session = Depends(get_db),
 ):
-    """Registra novo usuário, cria perfil acadêmico e faz login automático."""
+    """Registra novo usuário e dispara e-mail de aviso em segundo plano."""
     try:
         user = AuthService.register_user(db, user_data)
 
-        _, tokens = AuthService.authenticate_user(
-            db,
-            UserLogin(email=user_data.email, password=user_data.password),
+        # 4. DISPARA O E-MAIL EM SEGUNDO PLANO
+        # O FastAPI vai responder a requisição primeiro e enviar o e-mail logo depois.
+        # Ajuste "EmailService.send_pending_approval_email" para o nome exato da função que você criar.
+        background_tasks.add_task(
+            EmailService.send_pending_approval_email,
+            email=user.email,
+            name=user.name
         )
 
         return {
             "success": True,
-            "message": "Usuário registrado com sucesso",
+            "message": "Registo realizado com sucesso! A sua conta está em análise. Enviámos um email com mais detalhes.",
             "data": {
                 "user": UserResponse.from_orm(user),
-                "tokens": tokens,
             },
         }
 
@@ -70,9 +75,7 @@ async def register_user(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Erro interno ao registrar usuário."
         )
-
-
-# =========================
+## =========================
 # LOGIN EMAIL + SENHA
 # =========================
 @router.post("/login")
@@ -80,10 +83,25 @@ async def login_user(
     credentials: UserLogin,
     db: Session = Depends(get_db),
 ):
-    """Autentica usuário via email e senha."""
+    """Autentica usuário via email e senha e verifica aprovação."""
     try:
+        # 1. O AuthService verifica se o e-mail existe e a senha está correta
         user, tokens = AuthService.authenticate_user(db, credentials)
 
+        # 2. 🚨 A CATRACA DE SEGURANÇA AQUI 🚨
+        if user.status == UserStatus.PENDING:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Sua conta está aguardando aprovação de um administrador. Você não pode fazer login ainda."
+            )
+            
+        if user.status == UserStatus.REJECTED:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="O acesso para esta conta foi negado pelo administrador."
+            )
+
+        # 3. Se passou pelas travas, devolve o token e libera o acesso!
         return {
             "success": True,
             "message": "Login realizado com sucesso",

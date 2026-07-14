@@ -69,9 +69,10 @@ class UserResponse(TimestampedSchema):
     has_password: bool
     profile: Optional[ProfileResponse] = None
     accepted_terms: bool
+    status: Optional[str] = None  
 
     class Config:
-        from_attributes= True  # Permite ler dados direto do objeto SQLAlchemy
+        from_attributes = True  # Permite ler dados direto do objeto SQLAlchemy
 
 class UserProfile(UserResponse):
     """Schema estendido com dados sensíveis do próprio usuário."""

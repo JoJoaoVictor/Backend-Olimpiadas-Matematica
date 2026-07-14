@@ -110,3 +110,43 @@ class EmailService:
         """
         
         return EmailService.send_email([email], subject, body, is_html=True)
+
+    @staticmethod
+    def send_pending_approval_email(email: str, name: str) -> bool:
+        """Envia email avisando que a conta está em análise."""
+        subject = "O seu registo está em análise - Olimpíadas de Matemática"
+        
+        body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+            <h2>Olá, {name}!</h2>
+            <p>O seu registo foi recebido com sucesso e de momento está <strong>EM ANÁLISE</strong>.</p>
+            <p>Como somos uma plataforma restrita, a nossa equipa irá rever os seus dados em breve.</p>
+            <p>Assim que o seu acesso for libertado, enviaremos um novo email a avisar que já pode fazer login no sistema.</p>
+            <br>
+            <p>Equipa Olimpíadas de Matemática</p>
+        </div>
+        """
+        
+        return EmailService.send_email([email], subject, body, is_html=True)
+
+    @staticmethod
+    def send_account_approved_email(email: str, name: str) -> bool:
+        """Envia email avisando que a conta foi aprovada pelo admin."""
+        subject = "Conta Aprovada! 🎉 - Olimpíadas de Matemática"
+        
+        # URL de login (usa a configuração base do frontend)
+        login_url = f"{settings.CORS_ORIGINS[0]}/login"
+        
+        body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+            <h2>Boas notícias, {name}! 🎉</h2>
+            <p>A sua conta foi <strong>aprovada</strong> pela nossa equipa de administração.</p>
+            <p>Já pode aceder ao sistema e começar a utilizar a plataforma.</p>
+            <br>
+            <a href="{login_url}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Fazer Login Agora</a>
+            <br><br>
+            <p>Equipa Olimpíadas de Matemática</p>
+        </div>
+        """
+        
+        return EmailService.send_email([email], subject, body, is_html=True)

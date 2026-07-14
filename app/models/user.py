@@ -4,7 +4,7 @@ Arquivo: app/models/user.py
 Responsável por definir a tabela 'users' no banco de dados.
 """
 
-from sqlalchemy import Column, String, Boolean, Enum, DateTime, Integer
+from sqlalchemy import Column, String, Boolean, Enum, DateTime, Integer, ForeignKey
 from sqlalchemy.orm import relationship
 import enum
 
@@ -17,6 +17,13 @@ class UserRole(str, enum.Enum):
     PROFESSOR = "PROFESSOR"
     REVISOR   = "REVISOR"
     STUDENT   = "STUDENT"
+
+
+class UserStatus(str, enum.Enum):
+    """Define o status de aprovação do usuário."""
+    PENDING  = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 class User(BaseModel):
@@ -42,6 +49,13 @@ class User(BaseModel):
     is_active         = Column(Boolean, default=True,  nullable=False)
     is_email_verified = Column(Boolean, default=False, nullable=False)
     accepted_terms    = Column(Boolean, default=False, nullable=False) 
+
+    # ==========================
+    # FLUXO DE APROVAÇÃO (NOVOS)
+    # ==========================
+    status         = Column(Enum(UserStatus), default=UserStatus.PENDING, nullable=False)
+    approved_at    = Column(DateTime, nullable=True)
+    approved_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     # ==========================
     # SEGURANÇA E LOGIN
@@ -96,6 +110,13 @@ class User(BaseModel):
         cascade="all, delete-orphan"
     )
 
+    # ── approved_by ───────────────────────────────────────────────────────────
+    approved_by = relationship(
+        "User",
+        remote_side="User.id", 
+        foreign_keys=[approved_by_id]
+    )
+
     # ── profile ───────────────────────────────────────────────────────────────
     profile = relationship(
         "UserProfile",
@@ -115,4 +136,4 @@ class User(BaseModel):
         return bool(self.password_hash)
 
     def __repr__(self):
-        return f"<User(id={self.id}, email='{self.email}', role='{self.role}')>"
+        return f"<User(id={self.id}, email='{self.email}', role='{self.role}', status='{self.status}')>"

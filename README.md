@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/status-em%20desenvolvimento-orange?style=flat" />
 </p>
 
-API REST desenvolvida com **FastAPI** para gestão completa de olimpíadas de matemática, incluindo banco de questões, geração de provas e geração de PDFs com suporte nativo a **LaTeX via MathJax + Playwright**.
+API REST desenvolvida com **FastAPI** para gestão completa de olimpíadas de matemática, incluindo banco de questões, geração de provas e geração de PDFs com suporte nativo a **LaTeX via MathJax (3.2.2) + Playwright (1.58.0) **.
 
 ---
 

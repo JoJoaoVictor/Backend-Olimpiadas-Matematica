@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 import secrets
 
 from app.models.user_profile import UserProfile
-from app.models.user import User, UserRole
+from app.models.user import User, UserRole, UserStatus
 from app.schemas.auth import UserRegister, UserLogin
 from app.core.security import (
     verify_password,
@@ -61,8 +61,8 @@ class AuthService:
             password_hash=get_password_hash(user_data.password),
             role=user_data.role,
             email_verification_token=email_token,
-            is_active=True,
-            is_email_verified=False,
+            is_active=False,             
+            status=UserStatus.PENDING
         )
 
         db.add(user)

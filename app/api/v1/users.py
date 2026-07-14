@@ -18,13 +18,14 @@ from app.dependencies import (
     get_current_user,
 )
 # --- MODELS E SCHEMAS ---
-from app.models.user import User, UserRole
 from app.models.user_profile import UserProfile
-from app.models.question import Question  # 🌟 Importado para calcular as estatísticas reais
+from app.models.question import Question  
+from app.models.user import User, UserRole, UserStatus # <-- Adicione o UserStatus
+from datetime import datetime
 
 # Nota: Se o seu modelo de Provas estiver em outro local, ajuste o import abaixo.
 try:
-    from app.models.exam import Exam  # 🌟 Ajuste o caminho se necessário
+    from app.models.exam import Exam  
 except ImportError:
     Exam = None
 
@@ -163,10 +164,10 @@ async def list_users(
     search: Optional[str] = Query(None),
     role: Optional[UserRole] = Query(None),
     is_active: Optional[bool] = Query(None),
-    current_user: User = Depends(get_admin_user),  # Apenas Admin
+    status: Optional[UserStatus] = Query(None),  
+    current_user: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
-    """Lista usuários com paginação e filtros (Apenas Admin)."""
     query = db.query(User).options(joinedload(User.profile))
 
     if search:
@@ -177,6 +178,8 @@ async def list_users(
         query = query.filter(User.role == role)
     if is_active is not None:
         query = query.filter(User.is_active == is_active)
+    if status: # APLICAÇÃO DO NOVO FILTRO
+        query = query.filter(User.status == status)
 
     total = query.count()
     users = query.offset(skip).limit(limit).all()
@@ -211,6 +214,9 @@ async def create_user(
         password_hash=get_password_hash(user_data.password),
         role=user_data.role or UserRole.STUDENT,
         is_active=True,
+        status=UserStatus.APPROVED, 
+        approved_at=datetime.utcnow(),  
+        approved_by_id=current_user.id 
     )
 
     db.add(new_user)
@@ -230,7 +236,80 @@ async def create_user(
         "data": {"user": UserResponse.from_orm(user_with_profile or new_user)},
     }
 
+# ==============================================================================
+# APROVAÇÃO E REJEIÇÃO DE USUÁRIOS (ADMIN)
+# ==============================================================================
 
+@router.post("/{user_id}/approve", response_model=dict)
+async def approve_user(
+    user_id: int,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Aprova o cadastro de um usuário pendente."""
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    
+    user.status = UserStatus.APPROVED
+    user.is_active = True
+    user.approved_at = datetime.utcnow()
+    user.approved_by_id = current_user.id
+    
+    db.commit()
+    
+    return {
+        "success": True, 
+        "message": f"Usuário {user.name} aprovado com sucesso!"
+    }
+
+
+@router.post("/{user_id}/reject", response_model=dict)
+async def reject_user(
+    user_id: int,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Rejeita o cadastro de um usuário, impedindo seu acesso."""
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    
+    user.status = UserStatus.REJECTED
+    user.is_active = False
+    
+    db.commit()
+    
+    return {
+        "success": True, 
+        "message": f"Acesso negado para o usuário {user.name}."
+    }
+
+@router.post("/{user_id}/revert", response_model=dict)
+async def revert_user_status(
+    user_id: int,
+    current_user: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    """Reverte um usuário (Aprovado ou Rejeitado) de volta para a fila de PENDENTE."""
+    user = db.query(User).filter(User.id == user_id).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    
+    user.status = UserStatus.PENDING
+    user.is_active = False # Remove o acesso até ser aprovado novamente
+    user.approved_at = None
+    user.approved_by_id = None
+    
+    db.commit()
+    
+    return {
+        "success": True, 
+        "message": f"Usuário {user.name} voltou para a fila de análise."
+    }
 @router.get("/stats/summary", response_model=dict)
 async def get_user_stats(
     current_user: User = Depends(get_admin_user), db: Session = Depends(get_db)
