@@ -1,6 +1,13 @@
 """
 Gerador de PDF Otimizado com Playwright + MathJax SVG
-...
+
+Arquitetura de paginação:
+  - Cabeçalho e rodapé são renderizados pelo mecanismo nativo do Chromium
+    (display_header_footer), NÃO por <thead>/<tfoot> de tabela.
+  - O corpo é um documento de blocos simples, permitindo que o multicol
+    (column-count: 2) fragmente corretamente entre páginas.
+  - Imagens de cabeçalho/rodapé são sempre embutidas como data URI base64,
+    pois templates de header/footer do Chromium não carregam URLs externas.
 """
 from app.core.config import settings
 import io
@@ -10,7 +17,7 @@ import re
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from app.utils.playwright_manager import PlaywrightManager
 
@@ -25,8 +32,20 @@ except ImportError:
 class AdvancedPDFGenerator:
     _BLANK_PAGE_TEXT_THRESHOLD = 50
 
+    # Alturas de fallback (mm) quando não é possível medir a imagem
+    _FALLBACK_HEADER_H_MM = 25.0
+    _FALLBACK_FOOTER_H_MM = 20.0
+
+    # ────────────────────────────────────────────────────────────────
+    # Utilitários genéricos
+    # ────────────────────────────────────────────────────────────────
     @staticmethod
-    def _remove_blank_pages(pdf_bytes: bytes) -> bytes:    
+    def _remove_blank_pages(pdf_bytes: bytes) -> bytes:
+        """
+        ATENÇÃO: não usar em provas com questões discursivas. Uma página com
+        espaço de resolução tem pouquíssimo texto e seria removida por engano.
+        Mantido apenas para compatibilidade.
+        """
         if PdfReader is None or PdfWriter is None:
             return pdf_bytes
         try:
@@ -43,7 +62,7 @@ class AdvancedPDFGenerator:
             out = io.BytesIO()
             writer.write(out)
             return out.getvalue()
-        except Exception as e:
+        except Exception:
             logger.exception("Failed to remove blank pages")
             return pdf_bytes
 
@@ -79,8 +98,8 @@ class AdvancedPDFGenerator:
         dollar_count = text.count('$') - text.count('\\$')
         if dollar_count % 2 != 0:
             idx = text.rfind('$')
-            if idx != -1 and (idx == 0 or text[idx-1] != '\\'):
-                text = text[:idx] + text[idx+1:]
+            if idx != -1 and (idx == 0 or text[idx - 1] != '\\'):
+                text = text[:idx] + text[idx + 1:]
         open_paren = len(re.findall(r'(?<!\\)\\\(', text))
         close_paren = len(re.findall(r'(?<!\\)\\\)', text))
         if open_paren != close_paren:
@@ -90,54 +109,98 @@ class AdvancedPDFGenerator:
         text = re.sub(r'\s+\$', '$', text)
         return text
 
+    # ────────────────────────────────────────────────────────────────
+    # Imagens de layout (cabeçalho / rodapé)
+    # ────────────────────────────────────────────────────────────────
     @staticmethod
-    def _load_static_img_base64(filename: str) -> str:
-        try:
-            base_path = Path(__file__).resolve().parent.parent.parent / "static" / "img" / filename
-            if base_path.exists():
-                with open(base_path, "rb") as img_file:
-                    encoded = base64.b64encode(img_file.read()).decode('utf-8')
-                    return f"data:image/png;base64,{encoded}"
-            return ""
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _resolve_image(custom_value: Optional[str], default_filename: str) -> str:
+    def _read_layout_image_bytes(custom_value: Optional[str], default_filename: str) -> Optional[bytes]:
+        """Lê os bytes da imagem de layout, seja customizada ou o padrão estático."""
         if custom_value:
+            # 1. Já é data URI
             if custom_value.startswith("data:"):
-                return custom_value
-            if custom_value.startswith("/"):
-                base_url = getattr(settings, 'API_BASE_URL', 'http://localhost:8000').rstrip('/')
-                return base_url + custom_value
-            return custom_value
-        return AdvancedPDFGenerator._load_static_img_base64(default_filename)
+                try:
+                    return base64.b64decode(custom_value.split(",", 1)[1])
+                except Exception:
+                    logger.warning("Data URI de layout inválida; usando padrão.")
+                    custom_value = None
+            # 2. Caminho relativo salvo pelo ExamService (/uploads/layouts/...)
+            elif custom_value.startswith("/uploads/") or custom_value.startswith("uploads/"):
+                rel = custom_value.removeprefix("/uploads/").removeprefix("uploads/")
+                path = Path(settings.UPLOAD_PATH) / rel
+                if path.exists():
+                    return path.read_bytes()
+                logger.warning(f"Imagem de layout não encontrada em disco: {path}")
+                custom_value = None
+            else:
+                # URL externa não pode ser embutida no template do Chromium
+                logger.warning(f"Imagem de layout em URL externa ignorada: {custom_value}")
+                custom_value = None
 
+        base_path = Path(__file__).resolve().parent.parent.parent / "static" / "img" / default_filename
+        if base_path.exists():
+            return base_path.read_bytes()
+        logger.warning(f"Imagem padrão não encontrada: {base_path}")
+        return None
+
+    @staticmethod
+    def _image_size_px(data: bytes) -> Tuple[int, int]:
+        """Retorna (largura, altura) em pixels. (0, 0) se não for possível medir."""
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(data)) as im:
+                return im.size
+        except Exception:
+            pass
+        try:
+            if data[:8] == b'\x89PNG\r\n\x1a\n':
+                return (int.from_bytes(data[16:20], 'big'), int.from_bytes(data[20:24], 'big'))
+        except Exception:
+            pass
+        return (0, 0)
+
+    @staticmethod
+    def _to_data_uri(data: bytes) -> str:
+        mime = "image/png"
+        if data[:2] == b'\xff\xd8':
+            mime = "image/jpeg"
+        return f"data:{mime};base64,{base64.b64encode(data).decode('utf-8')}"
+
+    @staticmethod
+    def _prepare_layout_image(
+        custom_value: Optional[str],
+        default_filename: str,
+        width_mm: float,
+        fallback_height_mm: float,
+    ) -> Tuple[str, float]:
+        """Retorna (data_uri ou "", altura estimada em mm)."""
+        data = AdvancedPDFGenerator._read_layout_image_bytes(custom_value, default_filename)
+        if not data:
+            return "", 0.0
+        uri = AdvancedPDFGenerator._to_data_uri(data)
+        w_px, h_px = AdvancedPDFGenerator._image_size_px(data)
+        if w_px > 0 and h_px > 0:
+            height_mm = width_mm * (h_px / w_px)
+        else:
+            height_mm = fallback_height_mm
+        return uri, round(height_mm, 1)
+
+    # ────────────────────────────────────────────────────────────────
+    # Imagens das questões
+    # ────────────────────────────────────────────────────────────────
     @staticmethod
     def _get_image_source_for_question(q: Any) -> Optional[str]:
-        """
-        Extrai a URL da imagem da questão, compatível com objetos ORM, dicts
-        e o formato retornado por PDFService._extract_image_from_sqlalchemy.
-        """
         base_url = getattr(settings, 'API_BASE_URL', 'http://127.0.0.1').rstrip('/')
-        if base_url.endswith('/'):
-            base_url = base_url[:-1]
 
         src = None
-        # 1. Campo 'image' (objeto ORM ou dict retornado pelo PDFService)
         image_field = AdvancedPDFGenerator._get_field(q, "image")
         if image_field is not None:
-            # Objeto ORM com atributo 'url'
             if hasattr(image_field, 'url') and image_field.url:
                 src = image_field.url
-            # Dict com chave 'url' (formato do PDFService)
             elif isinstance(image_field, dict) and 'url' in image_field:
                 src = image_field['url']
-            # String pura (caminho relativo) – mantido por compatibilidade
             elif isinstance(image_field, str):
                 src = image_field
 
-        # 2. Campo 'images' (lista legada)
         if src is None:
             images_field = AdvancedPDFGenerator._get_field(q, "images")
             if images_field:
@@ -150,13 +213,8 @@ class AdvancedPDFGenerator:
                 elif isinstance(images_field, dict):
                     src = images_field.get('src')
 
-        # 3. Garante que caminho relativo vire URL absoluta
         if src and isinstance(src, str) and src.startswith('/uploads/'):
             src = base_url + src
-
-        # Log temporário
-        q_id = AdvancedPDFGenerator._get_field(q, "id")
-        logger.info(f"🐞 DEBUG IMAGE: question_id={q_id}, image_source_result={src}")
 
         return src
 
@@ -205,6 +263,9 @@ class AdvancedPDFGenerator:
                         return f' style="max-width: {w}px; max-height: {h}px;"'
         return ""
 
+    # ────────────────────────────────────────────────────────────────
+    # Título
+    # ────────────────────────────────────────────────────────────────
     @staticmethod
     def _build_exam_title(fase: str, anos: List[str], year: int = None) -> str:
         if year is None:
@@ -232,12 +293,10 @@ class AdvancedPDFGenerator:
         else:
             anos_lista = []
 
-        logger.info(f"_build_exam_title: fase_str={fase_str!r} fase_texto={fase_texto!r} anos_lista={anos_lista!r}")
-
         if not anos_lista:
             anos_texto = "Anos Diversos"
         else:
-            tem_medio       = any("médio" in a.lower() or "medio" in a.lower() for a in anos_lista)
+            tem_medio = any("médio" in a.lower() or "medio" in a.lower() for a in anos_lista)
             tem_fundamental = any("fundamental" in a.lower() for a in anos_lista)
             if not tem_medio and not tem_fundamental:
                 numeros_raw = []
@@ -246,10 +305,12 @@ class AdvancedPDFGenerator:
                     if ns:
                         numeros_raw.append(int(ns[0]))
                 if numeros_raw:
-                    todos_medio      = all(n <= 3 for n in numeros_raw)
+                    todos_medio = all(n <= 3 for n in numeros_raw)
                     todos_fundamental = all(n >= 4 for n in numeros_raw)
-                    if todos_medio: tem_medio = True
-                    elif todos_fundamental: tem_fundamental = True
+                    if todos_medio:
+                        tem_medio = True
+                    elif todos_fundamental:
+                        tem_fundamental = True
             if tem_medio and not tem_fundamental:
                 anos_texto = "ENSINO MÉDIO"
             else:
@@ -271,14 +332,16 @@ class AdvancedPDFGenerator:
 
         return f"OLIMPÍADA DE MATEMÁTICA DA UNEMAT – {year} – {fase_texto} – {anos_texto}"
 
+    # ────────────────────────────────────────────────────────────────
+    # Alternativas
+    # ────────────────────────────────────────────────────────────────
     @staticmethod
     def _parse_alternatives(question: Any) -> Dict[str, str]:
         alt_raw = AdvancedPDFGenerator._get_field(question, "alternatives")
-        
+
         if isinstance(alt_raw, dict):
-            # Transforma a chave k em minúscula: k.lower()
             return {k.lower(): str(v).strip() if v else "" for k, v in alt_raw.items()}
-            
+
         if isinstance(alt_raw, str):
             if not alt_raw.strip():
                 return {}
@@ -289,47 +352,50 @@ class AdvancedPDFGenerator:
                 clean = clean.replace('\\"', '"')
                 loaded = json.loads(clean)
                 if isinstance(loaded, dict):
-                    # Transforma a chave k em minúscula: k.lower()
                     return {k.lower(): str(v).strip() if v else "" for k, v in loaded.items()}
                 if isinstance(loaded, str):
                     try:
                         parsed = json.loads(loaded)
-                        # Transforma a chave k em minúscula: k.lower()
                         return {k.lower(): str(v).strip() if v else "" for k, v in parsed.items()}
-                    except: pass
-            except: pass
-            
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             lines = alt_raw.split('\n')
             alt_dict = {}
             for line in lines:
                 match = re.match(r'^([a-e])\)\s*(.*)$', line.strip(), re.IGNORECASE)
                 if match:
-                    # Alterado aqui de .upper() para .lower()
-                    key = match.group(1).lower()
-                    value = match.group(2).strip()
-                    alt_dict[key] = value
+                    alt_dict[match.group(1).lower()] = match.group(2).strip()
             if alt_dict:
                 return alt_dict
-                
+
             pattern = r'["\']?([A-E])["\']?\s*:\s*["\']?([^,"\']+)["\']?'
             matches = re.findall(pattern, alt_raw, re.IGNORECASE)
             if matches:
-                # Alterado aqui de key.upper() para key.lower()
                 return {key.lower(): value.strip() for key, value in matches}
-                
+
         return {}
 
     @staticmethod
     def _extract_correct_letter(correct_alternative: str) -> str:
-        if not correct_alternative: return ""
+        if not correct_alternative:
+            return ""
         text = correct_alternative.strip()
-        if not text: return ""
+        if not text:
+            return ""
         letter = text.upper()
-        if letter in "ABCDE": return letter
+        if letter in "ABCDE":
+            return letter
         for char in text:
-            if char.upper() in "ABCDE": return char.upper()
+            if char.upper() in "ABCDE":
+                return char.upper()
         return ""
 
+    # ────────────────────────────────────────────────────────────────
+    # Renderização das questões
+    # ────────────────────────────────────────────────────────────────
     @staticmethod
     def _render_questions_html(questions: List[Any], include_resolution: bool = False) -> str:
         html_parts = []
@@ -346,33 +412,18 @@ class AdvancedPDFGenerator:
             style_attrs = AdvancedPDFGenerator._get_image_style_attributes(q)
             img_html = f'<img src="{q_img_src}" class="question-img {img_class}"{style_attrs} />' if q_img_src else ""
 
-            # Captura a flag se a questão deve ocultar as alternativas
-            hide_alts = AdvancedPDFGenerator._get_field(q, "hide_alternatives", False)
+            hide_alts = bool(AdvancedPDFGenerator._get_field(q, "hide_alternatives", False))
 
             alts_html = ""
-            # Se hide_alts for verdadeiro, injeta o espaço de "Resolução:" adaptado para discursivas
             if hide_alts:
-                # Não exibe o bloco padrão no modo gabarito resolvido para evitar redundância visual pesada
                 if not include_resolution:
-                    alts_html = """
-                    <div class="resolucao-aluno-box" style="margin-top: 3mm; margin-bottom: 2mm; width: 100%;">
-                        <p style="font-family: 'Arial', serif; font-size: 13pt; font-weight: bold; color: #444; margin-bottom: 2mm;">Resolução:</p>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                        <div style="margin-bottom: 4mm; height: 1px; width: 100%;"></div>
-                    </div>
-                    """
+                    alts_html = (
+                        '<div class="resolucao-aluno-box">'
+                        '<p class="resolucao-aluno-label">Resolução:</p>'
+                        '<div class="resolucao-aluno-espaco"></div>'
+                        '</div>'
+                    )
             else:
-                # Fluxo Normal de Questões com Múltipla Escolha
                 alts_dict = AdvancedPDFGenerator._parse_alternatives(q)
                 if alts_dict:
                     alts_items = []
@@ -388,30 +439,29 @@ class AdvancedPDFGenerator:
                         if val:
                             sanitized = AdvancedPDFGenerator._sanitize_latex(str(val))
                             sanitized = sanitized.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                            if include_resolution and key.upper() == correct_letter.upper():
-                                alts_items.append(f'<span class="alt-item-red">{key.lower()}) {sanitized}</span>')
-                            else:
-                                alts_items.append(f'<span class="alt-item">{key.lower()}) {sanitized}</span>')
+                            css = "alt-item-red" if (include_resolution and key.upper() == correct_letter.upper()) else "alt-item"
+                            alts_items.append(f'<span class="{css}">{key.lower()}) {sanitized}</span>')
                     alts_html = f'<div class="alternativas">{" ".join(alts_items)}</div>'
 
             resolution_html = ""
             if include_resolution:
                 raw_res = ""
-                for field in ["detailedResolution", "detailed_resolution", "resolution", "resolucao", "solucao", "answerExplanation", "explanation"]:
+                for field in ["detailedResolution", "detailed_resolution", "resolution",
+                              "resolucao", "solucao", "answerExplanation", "explanation"]:
                     temp = AdvancedPDFGenerator._get_field(q, field, "")
-                    if temp and temp.strip():
+                    if temp and str(temp).strip():
                         raw_res = temp
                         break
                 if not raw_res:
                     raw_res = "Sem resolução disponível"
-                resolution = AdvancedPDFGenerator._sanitize_latex(raw_res)
+                resolution = AdvancedPDFGenerator._sanitize_latex(str(raw_res))
                 resolution = resolution.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                resolution_html = f"""
-                <div class="resolucao-box">
-                    <p class="resolucao-label">Solução:</p>
-                    <p class="resolucao-text">{resolution}</p>
-                </div>
-                """
+                resolution_html = (
+                    '<div class="resolucao-box">'
+                    '<p class="resolucao-label">Solução:</p>'
+                    f'<p class="resolucao-text">{resolution}</p>'
+                    '</div>'
+                )
 
             html_parts.append(f"""
             <div class="question-box">
@@ -424,7 +474,7 @@ class AdvancedPDFGenerator:
         return "\n".join(html_parts)
 
     # ════════════════════════════════════════════════════════════════
-    # Funções principais de geração (corrigida a indentação!)
+    # Geração principal
     # ════════════════════════════════════════════════════════════════
     @staticmethod
     async def create_exam_pdf(
@@ -434,40 +484,49 @@ class AdvancedPDFGenerator:
     ) -> io.BytesIO:
         options = options or {}
 
-        fase     = AdvancedPDFGenerator._get_field(exam, 'fase', '1ª FASE')
+        fase = AdvancedPDFGenerator._get_field(exam, 'fase', '1ª FASE')
         anos_raw = AdvancedPDFGenerator._get_field(exam, 'anos', [])
-        anos     = anos_raw if isinstance(anos_raw, list) else [str(anos_raw)]
-        year     = AdvancedPDFGenerator._get_field(exam, 'ano', None)
-        if not year:
-            year = datetime.now().year
+        anos = anos_raw if isinstance(anos_raw, list) else [str(anos_raw)]
+        year = AdvancedPDFGenerator._get_field(exam, 'ano', None) or datetime.now().year
         titulo = AdvancedPDFGenerator._build_exam_title(fase, anos, year)
-
-        custom_header = AdvancedPDFGenerator._get_field(exam, 'header_image', None)
-        custom_footer = AdvancedPDFGenerator._get_field(exam, 'footer_image', None)
-
-        header_img = AdvancedPDFGenerator._resolve_image(custom_header, "heder.PNG")
-        footer_img = AdvancedPDFGenerator._resolve_image(custom_footer, "footer.PNG")
 
         raw_header_size = AdvancedPDFGenerator._get_field(exam, 'header_size', 100.0)
         raw_footer_size = AdvancedPDFGenerator._get_field(exam, 'footer_size', 100.0)
         header_size = max(50.0, min(150.0, float(raw_header_size or 100.0)))
         footer_size = max(50.0, min(150.0, float(raw_footer_size or 100.0)))
 
-        header_width_mm = round(200 * header_size / 100, 1)
-        footer_width_mm = round(160 * footer_size / 100, 1)
+        # Largura máxima utilizável em A4 com margens laterais de 10mm
+        header_width_mm = min(190.0, round(190 * header_size / 100, 1))
+        footer_width_mm = min(190.0, round(160 * footer_size / 100, 1))
 
-        # Log temporário para depuração
-        for idx, q in enumerate(questions):
-            img = q.get('image') if isinstance(q, dict) else getattr(q, 'image', None)
-            url = None
-            if isinstance(img, dict):
-                url = img.get('url')
-            elif hasattr(img, 'url'):
-                url = img.url
-            logger.info(f"🐞 PDF GEN Q{idx} id={q.get('id') if isinstance(q, dict) else getattr(q, 'id', '?')} image_url={url}")
+        header_uri, header_h_mm = AdvancedPDFGenerator._prepare_layout_image(
+            AdvancedPDFGenerator._get_field(exam, 'header_image', None),
+            "heder.PNG", header_width_mm, AdvancedPDFGenerator._FALLBACK_HEADER_H_MM
+        )
+        footer_uri, footer_h_mm = AdvancedPDFGenerator._prepare_layout_image(
+            AdvancedPDFGenerator._get_field(exam, 'footer_image', None),
+            "footer.PNG", footer_width_mm, AdvancedPDFGenerator._FALLBACK_FOOTER_H_MM
+        )
+
+        # Margens = altura da imagem + folga. Limitadas para não engolir a página.
+        margin_top_mm = max(10.0, min(60.0, header_h_mm + 5.0)) if header_uri else 12.0
+        margin_bottom_mm = max(10.0, min(60.0, footer_h_mm + 5.0)) if footer_uri else 12.0
+
+        logger.info(
+            f"Layout PDF: header={header_width_mm}x{header_h_mm}mm "
+            f"footer={footer_width_mm}x{footer_h_mm}mm "
+            f"margens(top/bottom)={margin_top_mm}/{margin_bottom_mm}mm"
+        )
 
         questions_sem_resolucao = AdvancedPDFGenerator._render_questions_html(questions, False)
         questions_com_resolucao = AdvancedPDFGenerator._render_questions_html(questions, True)
+
+        campos_aluno = (
+            '<div class="campos-aluno">'
+            '<p><strong>ALUNO(A):</strong>___________________________________________________________________________</p>'
+            '<p><strong>ESCOLA:</strong> __________________________________________''<strong>MUNICÍPIO:</strong> _______________________</p>'
+            '</div>'
+        )
 
         html_content = f"""
         <!DOCTYPE html>
@@ -489,91 +548,147 @@ class AdvancedPDFGenerator:
             <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-svg.js"></script>
             <style>
                 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                @page {{ size: A4 portrait; margin: 5mm 10mm 5mm 10mm; }}
-                body {{ font-family: 'Arial', Times, serif; font-size: 14pt; line-height: 1.4; color: #000; background: #fff; }}
-                .print-table {{ width: 100%; border-collapse: collapse; }}
-                .print-table thead {{ display: table-header-group; }}
-                .print-table tfoot {{ display: table-footer-group; }}
-                .print-table tr {{ page-break-inside: avoid; }}
-                .header-space {{ width: 100%; text-align: center; margin-bottom: 2mm; }}
-                .header-img {{ width: {header_width_mm}mm; height: auto; max-width: 100%; margin: 0 auto; }}
-                .footer-space {{ position: fixed; bottom: 0; left: 0; width: 100%; text-align: center; z-index: 1000; margin: 0; }}
-                .print-table tfoot td {{ height: 30mm; border: none; vertical-align: bottom; }}
-                .footer-img {{ width: {footer_width_mm}mm; height: auto; max-width: 100%; margin: 0 auto; }}
-                .content-wrapper {{ width: 100%; }}
-                .titulo-prova {{ font-size: 14pt; font-weight: bold; margin: 0 0 1mm 33mm; text-align: left; }}
-                .campos-aluno {{ font-size: 14pt; margin: 0 0 5mm 8mm; }}
+                @page {{
+                    size: A4 portrait;
+                    margin: {margin_top_mm}mm 10mm {margin_bottom_mm}mm 10mm;
+                }}
+
+                body {{
+                    font-family: 'Arial', Times, serif;
+                    font-size: 14pt;
+                    line-height: 1.4;
+                    color: #000;
+                    background: #fff;
+                }}
+
+                .secao {{ width: 100%; }}
+                .secao-gabarito {{ break-before: page; page-break-before: always; }}
+
+                .titulo-prova {{ font-size: 14pt; font-weight: bold; margin: 0 0 2mm 0; text-align: center; }}
+                .campos-aluno {{ font-size: 14pt; margin: 0 0 5mm 0; }}
                 .campos-aluno p {{ margin-bottom: 1mm; }}
-                .content {{ column-count: 2; column-gap: 20px; text-align: justify; margin: 0 4mm 15mm 4mm; }}
-                .question-box {{ break-inside: avoid; page-break-inside: avoid; margin-bottom: 2mm; display: inline-block; width: 100%; min-height: 20px; }}
-                .enunciado {{ font-family: 'Arial', Times, serif; font-size: 14pt; margin-bottom: 1px; text-align: justify; line-height: 1.3; word-wrap: break-word; overflow-wrap: break-word; min-height: 15px; }}
-                .question-img {{ display: block; margin: 0.5mm auto; border: none; padding: 1mm; max-height: 70mm; width: auto; page-break-inside: avoid; }}
-                .question-img-small {{ max-width: 50% !important; max-height: 280px !important; width: auto; height: auto; display: block; margin: 1px auto; }}
-                .question-img-medium {{ max-width: 80% !important; max-height: 150px !important; width: auto; height: auto; display: block; margin: 1px auto; }}
-                .question-img-large {{ max-width: 100% !important; height: auto; display: block; margin: 1px auto; }}
-                .alternativas {{ font-family: 'Arial', Times, serif; font-size: 14pt; margin-top: 1.5mm; margin-bottom: 1.5mm; display: flex; flex-wrap: wrap; gap: 6mm; justify-content: space-between; }}
-                .alt-item {{ white-space: nowrap; color: #000; flex-shrink: 0; }}
+
+                /* column-fill: auto faz as colunas preencherem a altura da página
+                   sequencialmente, em vez de balancear. Essencial em mídia paginada. */
+                .content {{
+                    column-count: 2;
+                    column-gap: 8mm;
+                    column-fill: auto;
+                    text-align: justify;
+                }}
+
+                /* display: block (NÃO inline-block). Caixas inline-block são
+                   monolíticas no Chromium e quebram a fragmentação. */
+                .question-box {{
+                    display: block;
+                    width: 100%;
+                    break-inside: avoid;
+                    page-break-inside: avoid;
+                    margin-bottom: 3mm;
+                }}
+
+                .enunciado {{
+                    font-family: 'Arial', Times, serif;
+                    font-size: 14pt;
+                    margin-bottom: 1mm;
+                    text-align: justify;
+                    line-height: 1.3;
+                    word-wrap: break-word;
+                    overflow-wrap: break-word;
+                }}
+
+                .question-img {{ display: block; margin: 1mm auto; border: none; max-height: 70mm; width: auto; }}
+                .question-img-small  {{ max-width: 50% !important;  max-height: 60mm !important; width: auto; height: auto; }}
+                .question-img-medium {{ max-width: 80% !important;  max-height: 45mm !important; width: auto; height: auto; }}
+                .question-img-large  {{ max-width: 100% !important; max-height: 70mm !important; height: auto; }}
+
+                .alternativas {{
+                    font-family: 'Arial', Times, serif;
+                    font-size: 14pt;
+                    margin: 1.5mm 0;
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 4mm;
+                }}
+                .alt-item     {{ white-space: nowrap; color: #000; flex-shrink: 0; }}
                 .alt-item-red {{ white-space: nowrap; color: #cc0000; font-weight: bold; flex-shrink: 0; }}
-                .resolucao-box {{ margin-top: 1mm; margin-bottom: 5mm; }}
-                .resolucao-label {{ font-family: 'Arial', Times, serif; font-size: 14pt; margin-bottom: 1mm; color: #cc0000; font-weight: bold; }}
-                .resolucao-text {{ color: #cc0000; font-size: 14pt; line-height: 1.3; }}
+
+                .resolucao-box   {{ margin: 1mm 0 5mm 0; }}
+                .resolucao-label {{ font-size: 14pt; margin-bottom: 1mm; color: #cc0000; font-weight: bold; }}
+                .resolucao-text  {{ color: #cc0000; font-size: 14pt; line-height: 1.3; }}
+
+                /* Espaço de resolução do aluno: UMA caixa com altura declarada,
+                   em vez de vários divs empilhados. Ajuste a altura aqui. */
+                .resolucao-aluno-box    {{ margin: 2mm 0; width: 100%; }}
+                .resolucao-aluno-label  {{ font-size: 13pt; font-weight: bold; color: #444; margin-bottom: 1mm; }}
+                .resolucao-aluno-espaco {{ height: 28mm; width: 100%; }}
+
+                /* No gabarito a resolução pode fluir livremente entre colunas */
                 .content-gabarito .question-box {{
                     break-inside: auto !important;
                     page-break-inside: auto !important;
-                    display: block !important;
                 }}
             </style>
         </head>
         <body>
-            <!-- ========== TABELA 1: PROVA ========== -->
-            <table class="print-table">
-                <thead><tr><td><div class="header-space">{f'<img src="{header_img}" class="header-img" />' if header_img else ''}</div></td></tr></thead>
-                <tfoot><tr><td><div class="footer-space">{f'<img src="{footer_img}" class="footer-img" />' if footer_img else ''}</div></td></tr></tfoot>
-                <tbody>
-                    <tr>
-                        <td>
-                            <div class="content-wrapper">
-                                <div class="titulo-prova">{titulo}</div>
-                                <div class="campos-aluno">
-                                    <p><strong>ALUNO(A):</strong>___________________________________________________________________________</p>
-                                    <p><strong>ESCOLA:</strong> _________________________________________ <strong>MUNICÍPIO:</strong> ________________________</p>
-                                </div>
-                                <div class="content">{questions_sem_resolucao}</div>
-                            </div>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
+            <section class="secao">
+                <div class="titulo-prova">{titulo}</div>
+                {campos_aluno}
+                <div class="content">{questions_sem_resolucao}</div>
+            </section>
 
-            <!-- ========== TABELA 2: GABARITO ========== -->
-            <table class="print-table" style="page-break-before: always !important; break-before: page !important;">
-                <thead><tr><td><div class="header-space">{f'<img src="{header_img}" class="header-img" />' if header_img else ''}</div></td></tr></thead>
-                <tfoot><tr><td><div class="footer-space">{f'<img src="{footer_img}" class="footer-img" />' if footer_img else ''}</div></td></tr></tfoot>
-                <tbody>
-                    <tr>
-                        <td>
-                            <div class="content-wrapper">
-                                <div class="titulo-prova">{titulo}</div>
-                                <div class="campos-aluno">
-                                    <p><strong>ALUNO(A):</strong>____________________________________________________________________________</p>
-                                    <p><strong>ESCOLA:</strong> _________________________________________ <strong>MUNICÍPIO:</strong> ________________________</p>
-                                </div>
-                                <div class="content content-gabarito">{questions_com_resolucao}</div>
-                            </div>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
+            <section class="secao secao-gabarito">
+                <div class="titulo-prova">{titulo}</div>
+                {campos_aluno}
+                <div class="content content-gabarito">{questions_com_resolucao}</div>
+            </section>
         </body>
         </html>
         """
+
+        header_template = (
+            f'<div style="width:100%;margin:0;padding:0;text-align:center;font-size:1px;'
+            f'-webkit-print-color-adjust:exact;">'
+            f'<img src="{header_uri}" style="width:{header_width_mm}mm;height:auto;display:inline-block;"/>'
+            f'</div>'
+        ) if header_uri else '<div style="display:none"></div>'
+
+        footer_template = (
+            f'<div style="width:100%;margin:0;padding:0;text-align:center;font-size:1px;'
+            f'-webkit-print-color-adjust:exact;">'
+            f'<img src="{footer_uri}" style="width:{footer_width_mm}mm;height:auto;display:inline-block;"/>'
+            f'</div>'
+        ) if footer_uri else '<div style="display:none"></div>'
+
+        # ─── Parâmetros de encaixe (ajuste aqui para calibrar o layout) ─────────
+        ESPACO_MIN_MM   = 22     # escrita mínima por questão discursiva
+        ESPACO_MAX_MM   = 55    # teto de escrita (evita uma questão inflar demais)
+        IMG_MIN_MM      = 18     # piso da imagem ao encolher
+        MARGEM_CAIXA_MM = 3      # deve bater com margin-bottom de .question-box
+        SEGURANCA_MM    = 8      # folga por coluna contra erro de arredondamento
+
+        altura_util_mm = 297.0 - margin_top_mm - margin_bottom_mm
+
         buffer = io.BytesIO()
         browser = await PlaywrightManager.get_browser()
         page = None
 
         try:
-            page = await browser.new_page()
+            # O viewport precisa ter a MESMA largura útil da página impressa
+            # (A4 210mm − margens laterais de 10mm = 190mm), senão as colunas
+            # medidas têm largura diferente das colunas do PDF e toda a
+            # medição de altura sai errada.
+            PX_POR_MM = 96 / 25.4
+            largura_util_px = round((210.0 - 20.0) * PX_POR_MM)      # 718
+            altura_util_px  = round(altura_util_mm * PX_POR_MM)
+
+            page = await browser.new_page(
+                viewport={"width": largura_util_px, "height": altura_util_px}
+            )
+            await page.emulate_media(media="print")
             await page.set_content(html_content, wait_until="domcontentloaded", timeout=60000)
+
+            # 1. MathJax
             try:
                 await page.wait_for_function(
                     "MathJax.typesetPromise ? MathJax.typesetPromise().then(() => true) : true",
@@ -581,23 +696,154 @@ class AdvancedPDFGenerator:
                 )
             except Exception:
                 logger.warning("MathJax não respondeu, continuando...")
-            await page.evaluate("""
-                const gabaritoTable = document.getElementById('gabarito-table');
-                if (gabaritoTable) {
-                    const rect = gabaritoTable.getBoundingClientRect();
-                    // Se o topo da tabela estiver quase no início da página (tolerância de 5px),
-                    // significa que já houve quebra natural e a forçada criaria página extra.
-                    if (rect.top <= 5) {
-                        gabaritoTable.style.pageBreakBefore = 'auto';
-                        gabaritoTable.style.breakBefore = 'auto';
+
+            # 2. Aguarda TODAS as imagens carregarem.
+            #    Medir antes disso produz alturas erradas e quebra o encaixe.
+            try:
+                await page.evaluate("""() => Promise.all(
+                    [...document.images]
+                        .filter(img => !img.complete)
+                        .map(img => new Promise(r => { img.onload = img.onerror = r; }))
+                )""")
+            except Exception:
+                logger.warning("Timeout aguardando imagens; medindo mesmo assim.")
+
+            # 3. Encaixe modular: cada questão discursiva passa a ocupar um número
+            #    inteiro de faixas da coluna, para que a coluna feche sem sobra.
+            # 3. Empacotamento exato: agrupa questões por coluna e distribui a sobra
+            try:
+                relatorio = await page.evaluate("""
+                    (p) => {
+                        const PX_MM = 96 / 25.4;
+                        const content = document.querySelector('.content:not(.content-gabarito)');
+                        if (!content) return { erro: 'sem .content' };
+
+                        const secao = content.closest('.secao');
+                        const topo  = content.getBoundingClientRect().top
+                                    - secao.getBoundingClientRect().top;
+
+                        const alturaPag = p.alturaUtilMm * PX_MM;
+                        const seg       = p.segurancaMm * PX_MM;
+                        const margem    = p.margemCaixaMm * PX_MM;
+                        const espacoMin = p.espacoMinMm * PX_MM;
+                        const espacoMax = p.espacoMaxMm * PX_MM;
+                        const imgMin    = p.imgMinMm * PX_MM;
+
+                        // 1ª página tem menos espaço: título e campos do aluno ficam acima
+                                                const col1 = alturaPag - topo - seg;
+                        const colN = alturaPag - seg;
+
+                        // Trava de segurança: se a capacidade calculada for absurda
+                        // (zero, negativa, ou menor que o mínimo de escrita), é sinal
+                        // de erro na medição de "topo" — não deixa degradar em silêncio.
+                        if (col1 < espacoMin || colN < espacoMin) {
+                            return {
+                                erro: 'capacidade de coluna inválida',
+                                topo_mm: Math.round(topo / PX_MM),
+                                alturaPag_mm: Math.round(alturaPag / PX_MM),
+                                col1_mm: Math.round(col1 / PX_MM),
+                                colN_mm: Math.round(colN / PX_MM)
+                            };
+                        }
+                        const capacidade = (i) => (i < 2 ? col1 : colN);
+                        
+                        // ── 1. Mede o conteúdo de cada caixa, sem espaço de escrita ──
+                        const itens = [...content.querySelectorAll('.question-box')].map((box, i) => {
+                            const espaco = box.querySelector('.resolucao-aluno-espaco');
+                            if (espaco) espaco.style.height = '0px';
+                            const img = box.querySelector('.question-img');
+                            if (img) img.style.maxHeight = '';
+                            return {
+                                n: i + 1, box, espaco, img,
+                                base: box.getBoundingClientRect().height,
+                                imgMm: null
+                            };
+                        });
+
+                        // ── 2. Encolhe a imagem só de quem não cabe nem sozinho ──
+                        const capMin = Math.min(col1, colN);
+                        itens.forEach(it => {
+                            const precisa = it.base + (it.espaco ? espacoMin : 0) + margem;
+                            if (precisa > capMin && it.img) {
+                                const hImg = it.img.getBoundingClientRect().height;
+                                const nova = Math.max(imgMin, hImg - (precisa - capMin));
+                                it.img.style.maxHeight = nova + 'px';
+                                it.imgMm = Math.round(nova / PX_MM);
+                                it.base = it.box.getBoundingClientRect().height;
+                            }
+                        });
+
+                        // ── 3. Empacota: enche cada coluna até o limite ──
+                        const colunas = [];
+                        let atual = { itens: [], usado: 0, cap: capacidade(0) };
+                        itens.forEach(it => {
+                            const precisa = it.base + (it.espaco ? espacoMin : 0) + margem;
+                            if (atual.itens.length > 0 && atual.usado + precisa > atual.cap) {
+                                colunas.push(atual);
+                                atual = { itens: [], usado: 0, cap: capacidade(colunas.length) };
+                            }
+                            atual.itens.push(it);
+                            atual.usado += precisa;
+                        });
+                        if (atual.itens.length) colunas.push(atual);
+
+                        // ── 4. Distribui a sobra entre as discursivas de cada coluna ──
+                        const relat = [];
+                        colunas.forEach((col, ci) => {
+                            const disc  = col.itens.filter(it => it.espaco);
+                            const sobra = Math.max(0, (col.cap - col.usado) * 0.95);
+                            const extra = disc.length ? sobra / disc.length : 0;
+
+                            disc.forEach(it => {
+                                const h = Math.min(espacoMax, espacoMin + extra);
+                                it.espaco.style.height = h + 'px';
+                                it.escritaMm = Math.round(h / PX_MM);
+                            });
+
+                            relat.push({
+                                col: ci + 1,
+                                cap_mm: Math.round(col.cap / PX_MM),
+                                questoes: col.itens.map(it => ({
+                                    q: it.n,
+                                    tipo: it.espaco ? 'disc' : 'alt',
+                                    conteudo_mm: Math.round(it.base / PX_MM),
+                                    escrita_mm: it.escritaMm ?? null,
+                                    img_mm: it.imgMm
+                                }))
+                            });
+                        });
+
+                        return {
+                            coluna_pag1_mm: Math.round(col1 / PX_MM),
+                            coluna_demais_mm: Math.round(colN / PX_MM),
+                            colunas: relat
+                        };
                     }
-                }
-            """)
+                """, {
+                    "alturaUtilMm":  altura_util_mm,
+                    "espacoMinMm":   ESPACO_MIN_MM,
+                    "espacoMaxMm":   ESPACO_MAX_MM,
+                    "imgMinMm":      IMG_MIN_MM,
+                    "margemCaixaMm": MARGEM_CAIXA_MM,
+                    "segurancaMm":   SEGURANCA_MM,
+                })
+                logger.info(f" COLUNAS: {relatorio}")
+            except Exception as e:
+                logger.warning(f"Empacotamento falhou, usando alturas do CSS: {e}")
+
+            # 4. Geração
             pdf_bytes = await page.pdf(
                 format="A4",
                 print_background=True,
-                prefer_css_page_size=True,
-                margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
+                display_header_footer=True,
+                header_template=header_template,
+                footer_template=footer_template,
+                margin={
+                    "top":    f"{margin_top_mm}mm",
+                    "bottom": f"{margin_bottom_mm}mm",
+                    "left":   "10mm",
+                    "right":  "10mm",
+                },
             )
 
             buffer.write(pdf_bytes)
@@ -612,7 +858,7 @@ class AdvancedPDFGenerator:
             if page:
                 await page.close()
 
-    # Métodos auxiliares com indentação CORRETA
+    # ────────────────────────────────────────────────────────────────
     @staticmethod
     async def create_question_bank_pdf(questions: List[Any], options: Dict[str, Any] = None) -> io.BytesIO:
         fake_exam = {"fase": "Banco de Questões", "anos": ["Todos"], "ano": datetime.now().year}

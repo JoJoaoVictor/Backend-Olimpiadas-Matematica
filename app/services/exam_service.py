@@ -269,10 +269,10 @@ class ExamService:
         for q_id in ids_to_add:
             data = q_data_dict[q_id]
             new_eq = ExamQuestion(
-                exam_id=exam.id, 
-                question_id=q_id, 
+                exam_id=exam.id,
+                question_id=q_id,
                 order_index=0,
-                hide_alternatives=data.hide_alternatives 
+                hide_alternatives=bool(data.hide_alternatives) if data.hide_alternatives is not None else False
             )
             db.add(new_eq)
 
@@ -280,24 +280,28 @@ class ExamService:
 
         for index, q_id in enumerate(pure_ids):
             data = q_data_dict[q_id]
+
+            # Só grava hide_alternatives quando o cliente enviou o campo.
+            # Se vier None, a flag persistida é preservada (reordenar não apaga nada).
+            valores = {"order_index": index + 1}
+            if data.hide_alternatives is not None:
+                valores["hide_alternatives"] = bool(data.hide_alternatives)
+
             db.query(ExamQuestion).filter(
                 ExamQuestion.exam_id == exam.id,
                 ExamQuestion.question_id == q_id
-            ).update({
-                "order_index": index + 1,
-                "hide_alternatives": data.hide_alternatives 
-            }, synchronize_session=False)
+            ).update(valores, synchronize_session=False)
 
         exam.total_questions = len(pure_ids)
         status_str = str(exam.status).replace("ExamStatus.", "").upper()
-        
+
         if status_str in ["APROVADA", "APLICADA"] and pure_ids:
             category_applied = db.query(Category).filter(func.lower(Category.name) == "aplicadas").first()
             if not category_applied:
                 category_applied = Category(name="Aplicadas", description="Em provas oficiais", color="#28a745")
                 db.add(category_applied)
                 db.flush()
-                
+
             db.query(Question).filter(
                 Question.id.in_(pure_ids)
             ).update({"category_id": category_applied.id}, synchronize_session=False)
@@ -310,7 +314,7 @@ class ExamService:
                 Exam.id != exam.id,
                 Exam.status.in_([ExamStatus.APROVADA, ExamStatus.APLICADA])
             ).all()
-            
+
             still_in_use_ids = {q[0] for q in still_in_use}
             ids_to_revert = list(set(ids_to_remove) - still_in_use_ids)
 
@@ -322,7 +326,7 @@ class ExamService:
         db.commit()
         db.refresh(exam)
         return exam
-    
+
     @staticmethod
     def update_exam_layout(
         db: Session,

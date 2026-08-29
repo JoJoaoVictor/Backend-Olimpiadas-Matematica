@@ -56,7 +56,7 @@ class ExamUpdate(BaseModel):
 class ExamQuestionUpdate(BaseModel):
     question_id: int = Field(..., gt=0)
     order_index: Optional[int] = 0
-    hide_alternatives: Optional[bool] = False
+    hide_alternatives: Optional[bool] = None
 
 
 class ExamQuestionResponse(BaseModel):
