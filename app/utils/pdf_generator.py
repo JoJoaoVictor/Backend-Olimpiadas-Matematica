@@ -828,8 +828,10 @@ class AdvancedPDFGenerator:
                     "segurancaMm":   SEGURANCA_MM,
                 })
                 logger.info(f" COLUNAS: {relatorio}")
+                print(f"\n\n===== DEBUG COLUNAS =====\n{relatorio}\n==========================\n\n", flush=True)
             except Exception as e:
                 logger.warning(f"Empacotamento falhou, usando alturas do CSS: {e}")
+                print(f"\n\n===== DEBUG ERRO ENCAIXE =====\n{e}\n==========================\n\n", flush=True)
 
             # 4. Geração
             pdf_bytes = await page.pdf(
