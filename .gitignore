@@ -38,4 +38,7 @@ build/
 .env.local
 .env.development.local
 .env.test.local
+.env.productiontest-prod/
 .env.production
+backup.dump
+nginx.conf
