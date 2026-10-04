@@ -41,7 +41,7 @@ class Exam(BaseModel):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True
     )
-    
+
     # Relação para aceder aos dados do revisor (ex: exam.reviewed_by.name)
     reviewed_by = relationship("User", foreign_keys=[reviewed_by_id])
 
@@ -61,7 +61,7 @@ class Exam(BaseModel):
     # Especificamos foreign_keys aqui para o SQLAlchemy não se confundir
     # com as duas relações que apontam para a tabela "users"
     author = relationship("User", foreign_keys=[author_id], back_populates="exams")
-    
+
     exam_questions = relationship(
         "ExamQuestion",
         back_populates="exam",

@@ -58,7 +58,7 @@ class ImageService:
             image_model = ImageModel(
                 filename=unique_filename,
                 original_name=file.filename,
-                file_path=str(file_path.relative_to(Path(settings.UPLOAD_PATH))),
+                file_path=str(file_path.relative_to(Path('/app'))),
                 file_size=file_path.stat().st_size,
                 mime_type=file.content_type,
                 width=processed_info['width'],

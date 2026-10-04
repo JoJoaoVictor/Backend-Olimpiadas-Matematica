@@ -36,3 +36,8 @@ certifi==2025.8.3
 idna==3.10
 charset-normalizer==3.4.3
 urllib3==2.5.0
+email-validator>=2.1.0
+
+fastapi-mail>=1.4.1
+email-validator
+psycopg[binary]==3.2.3

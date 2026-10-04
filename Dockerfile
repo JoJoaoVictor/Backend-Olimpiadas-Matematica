@@ -1,50 +1,56 @@
-# Use Python 3.11 slim image
-FROM python:3.11-slim
+#Imagem base: Python 3.12-slim (igual ao servidor local em produção)
+FROM python:3.12-slim
 
-# Set environment variables
+# Variáveis de ambiente
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PLAYWRIGHT_BROWSERS_PATH=/home/app/.cache/ms-playwright
 
-# Install system dependencies
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         postgresql-client \
         build-essential \
         libpq-dev \
         curl \
+        # Libs obrigatórias para Playwright/Chromium no Ubuntu 24.04
+        libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+        libcups2t64 libdrm2 libxkbcommon0 libxcomposite1 \
+        libxdamage1 libxfixes3 libxrandr2 libgbm1 \
+        libasound2t64 libpango-1.0-0 libcairo2 \
+        fonts-liberation \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory
 WORKDIR /app
 
-# Install Python dependencies
 COPY requirements/production.txt requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# Create non-root user
 RUN addgroup --system app \
-    && adduser --system --group app
+    && adduser --system --group --home /home/app app \
+    && mkdir -p /home/app/.cache \
+    && chown -R app:app /home/app
 
-# Copy application code
-COPY . .
+COPY --chown=app:app . .
 
-# Create necessary directories
 RUN mkdir -p uploads static logs \
     && chown -R app:app /app
 
-# Switch to non-root user
 USER app
+RUN playwright install chromium
 
-# Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=30s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run application
-CMD ["gunicorn", "app.main:app", "-c", "gunicorn.conf.py"]
-
+CMD ["sh", "-c", "gunicorn app.main:app \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers ${GUNICORN_WORKERS:-4} \
+    --bind 0.0.0.0:8000 \
+    --timeout 120 \
+    --access-logfile /app/logs/access.log \
+    --error-logfile /app/logs/error.log \
+    --log-level ${LOG_LEVEL:-info}"]
